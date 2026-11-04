@@ -301,7 +301,9 @@ def analyze(
                 export = opt.export_folds and name != "_rough"
                 if name in ("body_parts", "body_regions"):
                     folds = (0,) if opt.fast_bca else None
-                    out = engine.infer(prep, folds=folds, force_split=bca_force_split, return_folds=export)
+                    # body_parts and body_regions get the identical (cached) 5 mm input
+                    out = engine.infer(prep, folds=folds, force_split=bca_force_split, return_folds=export,
+                                       shared_input=True)  # fmt: skip
                 else:
                     out = engine.infer(prep, return_folds=export)
                 seg, fold_segs = out if export else (out, None)

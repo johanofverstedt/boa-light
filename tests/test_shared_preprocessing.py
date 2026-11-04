@@ -62,13 +62,24 @@ def _ct_at_1p5mm():
     return change_spacing(as_closest_canonical(img), [1.5, 1.5, 1.5], order=3, dtype=np.int32)
 
 
-def check_crop_cache_identical():
+def _ct_at_5mm_slices():
+    from conftest import TS_EXAMPLE, _synthetic_ct
+
+    from boa_light.imaging import as_closest_canonical, change_spacing
+
+    img = nib.load(TS_EXAMPLE) if Path(TS_EXAMPLE).is_file() else _synthetic_ct()
+    img = as_closest_canonical(nib.Nifti1Image(np.asanyarray(img.dataobj).astype(np.float64), img.affine))
+    z = [float(v) for v in img.header.get_zooms()[:2]]
+    return change_spacing(img, z + [5.0], order=3, dtype=np.int32)
+
+
+def check_crop_cache_identical(task_ids=(291, 292, 293, 294, 295), make_img=None):
     dp, PlansManager = nnunet()
     from boa_light import predictor as P
     from boa_light.models import NETWORKS
     from boa_light.weights import model_folder
 
-    img = _ct_at_1p5mm()
+    img = (make_img or _ct_at_1p5mm)()
     data = np.asanyarray(img.dataobj).astype(np.float32)
     array = np.ascontiguousarray(data.transpose(2, 1, 0))[None]
     spacing = [float(s) for s in img.header.get_zooms()[:3]][::-1]
@@ -84,7 +95,7 @@ def check_crop_cache_identical():
     try:
         reference, cached = [], []
         configs = []
-        for tid in (291, 292, 293, 294, 295):
+        for tid in task_ids:
             folder = model_folder(NETWORKS[tid], Path(WEIGHTS))
             pm = PlansManager(json.loads((folder / "plans.json").read_text()))
             cm = pm.get_configuration("3d_fullres")
@@ -104,7 +115,7 @@ def check_crop_cache_identical():
     finally:
         dp.crop_to_nonzero = original
 
-    assert n_plain == 5 and calls["n"] == 1, "crop_to_nonzero should run once for the five networks"
+    assert n_plain == len(task_ids) and calls["n"] == 1, "crop_to_nonzero should run once for all networks"
     for (d0, s0, p0), (d1, s1, p1) in zip(reference, cached):
         assert d0.dtype == d1.dtype and np.array_equal(d0, d1)
         assert np.array_equal(s0, s1)
@@ -119,4 +130,5 @@ if __name__ == "__main__":
     import boa_light.imaging  # noqa: F401  (conftest settings are not needed here)
 
     check_crop_cache_identical()
+    check_crop_cache_identical((543, 542), _ct_at_5mm_slices)  # body_parts + body_regions
     print("OK")

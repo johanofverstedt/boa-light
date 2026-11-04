@@ -146,12 +146,14 @@ class SegmentationEngine:
     # ------------------------------------------------------------------ #
     # Inference (GPU)
     # ------------------------------------------------------------------ #
-    def _predict_parts(self, task: Task, img: nib.Nifti1Image, folds, return_folds: bool = False):
+    def _predict_parts(self, task: Task, img: nib.Nifti1Image, folds, return_folds: bool = False,
+                       shared_input: bool = False):
         """Returns the segmentation, or (segmentation, per-fold segmentations | None)."""
         if not task.multimodel:
+            kwargs = {"shared_input": True} if shared_input else {}
             if return_folds:
-                return self.predict_fn(task.task_ids[0], img, folds, task.step_size, return_folds=True)
-            return self.predict_fn(task.task_ids[0], img, folds, task.step_size)
+                return self.predict_fn(task.task_ids[0], img, folds, task.step_size, return_folds=True, **kwargs)
+            return self.predict_fn(task.task_ids[0], img, folds, task.step_size, **kwargs)
         combined = np.zeros(img.shape, dtype=np.uint8)
         for tid in task.task_ids:
             # the same input goes through all part models -> nnU-Net preprocessing can be shared
@@ -167,11 +169,14 @@ class SegmentationEngine:
         ss = prep.img_in_rsp.shape
         return bool((np.prod(ss) > NR_VOXELS_SPLIT_THR and ss[2] > 200 and prep.task.multimodel) or force_split)
 
-    def infer(self, prep: Prepared, folds=None, force_split: bool = False, return_folds: bool = False):
+    def infer(self, prep: Prepared, folds=None, force_split: bool = False, return_folds: bool = False,
+              shared_input: bool = False):
         """Segment a prepared input.
 
         Returns the segmentation (or None for an empty crop). With ``return_folds`` returns
         ``(segmentation, {fold id: segmentation})``; the dict is None for single-fold models.
+        ``shared_input`` tells the predictor that the same prepared image is also given to
+        another network (body_parts and body_regions), so its preprocessing can be shared.
         """
         if prep.empty:
             return (None, None) if return_folds else None
@@ -180,7 +185,7 @@ class SegmentationEngine:
         img = prep.img_in_rsp
         ss = img.shape
         if not self.will_split(prep, force_split):
-            return self._predict_parts(task, img, folds, return_folds)
+            return self._predict_parts(task, img, folds, return_folds, shared_input)
 
         logger.info("Splitting into subparts...")
         data = np.asanyarray(img.dataobj)
