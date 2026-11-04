@@ -102,9 +102,49 @@ def postprocess_nifti(img: nib.Nifti1Image, task_name: str) -> nib.Nifti1Image:
     return add_label_map_to_nifti(out, class_map[task_name])
 
 
+def _tissue_lut() -> np.ndarray:
+    """(region label, HU class) -> tissue label, equivalent to TISSUE_DERIVATION_RULES.
+
+    HU classes: 0 = outside [-1000, 3000], 1 = adipose [-190, -30], 2 = muscle [-29, 150],
+    3 = any other value inside [-1000, 3000]. The rules never overlap within a region
+    (muscle region: muscle HU vs. adipose HU), so a lookup table reproduces BOA's
+    sequential mask assignment exactly.
+    """
+    lut = np.zeros((256, 4), dtype=np.uint8)
+    for tissue, (hu, region) in TISSUE_DERIVATION_RULES.items():
+        if hu == HURange.ALL:
+            lut[region.value, 1:4] = tissue.value
+        elif hu == HURange.ADIPOSE_TISSUE:
+            lut[region.value, 1] = tissue.value
+        elif hu == HURange.MUSCLE_TISSUE:
+            lut[region.value, 2] = tissue.value
+        else:  # pragma: no cover
+            raise ValueError(hu)
+    return lut
+
+
+def _hu_class(ct: np.ndarray) -> np.ndarray:
+    cls = np.zeros(ct.shape, dtype=np.uint8)
+    lo, hi = HURange.ALL.value
+    cls[(ct >= lo) & (ct <= hi)] = 3
+    lo, hi = HURange.ADIPOSE_TISSUE.value
+    cls[(ct >= lo) & (ct <= hi)] = 1
+    lo, hi = HURange.MUSCLE_TISSUE.value
+    cls[(ct >= lo) & (ct <= hi)] = 2
+    return cls
+
+
 def subclassify_tissues(
-    ct: nib.Nifti1Image, body_regions: nib.Nifti1Image, median_filtering: bool = False
+    ct: nib.Nifti1Image, body_regions: nib.Nifti1Image, median_filtering: bool = False, workers: int | None = None
 ) -> nib.Nifti1Image:
+    """Tissue labels from body regions + HU ranges (BOA ``subclassify_tissues``).
+
+    One lookup-table pass over the volume, split into slabs processed in parallel threads;
+    the result is identical to BOA's per-rule masking.
+    """
+    import os
+    from concurrent.futures import ThreadPoolExecutor
+
     image_data = np.asanyarray(ct.dataobj)
     seg_data = np.asanyarray(body_regions.dataobj)
     if median_filtering:
@@ -118,6 +158,27 @@ def subclassify_tissues(
         kernel = [3, 3, 3]
         kernel[pos] = 1
         image_data = scipy.ndimage.median_filter(image_data, size=kernel)
+
+    if seg_data.dtype != np.uint8:
+        if seg_data.min() < 0 or seg_data.max() > 255:  # not produced by BOA_light; fall back
+            return _subclassify_tissues_masks(image_data, seg_data, body_regions)
+        seg_data = seg_data.astype(np.uint8)
+    lut = _tissue_lut()
+    tissue = np.empty(seg_data.shape, dtype=np.uint8)
+    workers = workers or min(8, os.cpu_count() or 1)
+    n = seg_data.shape[0]
+    bounds = np.linspace(0, n, min(n, workers * 2) + 1).round().astype(int)
+
+    def run(a, b):
+        tissue[a:b] = lut[seg_data[a:b], _hu_class(image_data[a:b])]
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        list(pool.map(lambda ab: run(*ab), zip(bounds[:-1], bounds[1:])))
+    return _tissue_image(tissue, body_regions)
+
+
+def _subclassify_tissues_masks(image_data, seg_data, body_regions) -> nib.Nifti1Image:
+    """BOA's original formulation (reference implementation, used as fallback)."""
     masks = {
         r: np.logical_and(np.greater_equal(image_data, r.value[0]), np.less_equal(image_data, r.value[1]))
         for r in HURange
@@ -125,6 +186,10 @@ def subclassify_tissues(
     tissue = np.zeros(seg_data.shape, dtype=np.uint8)
     for t, (hu, region) in TISSUE_DERIVATION_RULES.items():
         tissue[masks[hu] & np.equal(seg_data, region.value)] = t.value
+    return _tissue_image(tissue, body_regions)
+
+
+def _tissue_image(tissue: np.ndarray, body_regions: nib.Nifti1Image) -> nib.Nifti1Image:
     header = body_regions.header.copy()
     header.set_data_dtype(np.uint8)
     header.extensions.clear()

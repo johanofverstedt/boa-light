@@ -152,3 +152,17 @@ def test_parallel_zoom_identical(shape, zoom, order):
     ref = a.copy() if all(z == 1 for z in zoom) else ndimage.zoom(a, zoom, order=order, mode="nearest")
     for workers in (2, 3, 7):
         np.testing.assert_array_equal(parallel_zoom(a, zoom, order=order, workers=workers), ref)
+
+
+def test_tissue_lut_matches_boa_rules():
+    from boa_light.bca import _subclassify_tissues_masks, subclassify_tissues
+
+    rng = np.random.default_rng(3)
+    ct = rng.uniform(-1100, 3100, (60, 50, 40))
+    ct.flat[:12] = [-1000, 3000, -190, -30, -29, 150, -191, -31, -28, 151, -1001, 3001]
+    regions = rng.choice([0, *range(1, 12), 255], ct.shape).astype(np.uint8)
+    r_img = nib.Nifti1Image(regions, np.eye(4))
+    for data in (ct, np.round(ct).astype(np.int16)):
+        ref = _subclassify_tissues_masks(data, regions, r_img)
+        new = subclassify_tissues(nib.Nifti1Image(data, np.eye(4)), r_img, workers=3)
+        np.testing.assert_array_equal(np.asanyarray(ref.dataobj), np.asanyarray(new.dataobj))
