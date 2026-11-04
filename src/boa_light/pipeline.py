@@ -44,6 +44,7 @@ class Options:
     threads: int = 4
     keep_models_loaded: bool = True
     fast_export: bool = True  # argmax on the GPU (identical result, much faster)
+    progress: bool = True  # print progress messages to stderr
     download: bool = True
     weights_root: Path | None = None
 
@@ -70,6 +71,23 @@ class _Timer:
         dt = time.perf_counter() - self.t
         self.stats.setdefault("timings", {})[self.key] = round(dt, 3)
         logger.info("%s: DONE in %.2fs", self.key, dt)
+
+
+class _Progress:
+    """Short human readable status lines on stderr (independent of logging)."""
+
+    def __init__(self, enabled: bool):
+        self.enabled = enabled
+        self.t0 = time.perf_counter()
+
+    def __call__(self, msg: str, end: str = "\n") -> None:
+        if self.enabled:
+            elapsed = time.perf_counter() - self.t0
+            sys.stderr.write(f"[{elapsed:7.1f}s] {msg}{end}")
+            sys.stderr.flush()
+
+
+_STEP_NAMES = {"_rough": "rough 6 mm total (crop masks)"}
 
 
 def load_input(path: Path) -> tuple[nib.Nifti1Image, list[dict[str, Any]]]:
@@ -99,6 +117,7 @@ def analyze(
     ``predict_fn`` can replace the nnU-Net model pool (used for testing).
     """
     opt = options or Options()
+    progress = _Progress(opt.progress)
     res = Result()
     stats = res.stats
     t_start = time.perf_counter()
@@ -122,6 +141,7 @@ def analyze(
         output_dir.mkdir(parents=True, exist_ok=True)
 
     # ---------------------------------------------------------------- input
+    progress(f"Loading {input_image if not isinstance(input_image, nib.Nifti1Image) else 'image'}")
     with _Timer(stats, "load_input"):
         is_dicom = False
         if isinstance(input_image, nib.Nifti1Image):
@@ -142,6 +162,7 @@ def analyze(
             ct_data.min(),
             ct_data.max(),
         )
+    progress(f"  image {shape}, spacing {tuple(round(float(z), 3) for z in zooms)} mm")
     stats["num_voxels"] = int(np.prod(shape))
     stats["num_slices"] = int(shape[2])
     if save and is_dicom:
@@ -156,13 +177,29 @@ def analyze(
 
         ids = networks_for(tasks, opt.fast_total, opt.crop_source)
         if opt.download:
+            from boa_light.weights import is_available
+
+            missing = [i for i in ids if not is_available(i, opt.weights_root)]
+            if missing:
+                progress(f"Downloading weights for {len(missing)} network(s): {missing}")
             with _Timer(stats, "download_weights"):
                 weights.ensure(ids, opt.weights_root)
         pool = ModelPool(opt.device, opt.weights_root, keep_loaded=opt.keep_models_loaded)
         pool.fast_export = opt.fast_export
         predict_fn = pool.predict
         stats["device"] = str(pool.device)
-    engine = SegmentationEngine(ctx, predict_fn)
+    current = {"name": "", "i": 0, "n": 0}
+    base_predict = predict_fn
+
+    def predict_with_progress(task_id, img, folds, step_size):
+        t = time.perf_counter()
+        out = base_predict(task_id, img, folds, step_size)
+        current["i"] += 1
+        if current["n"] > 1:  # multi-network task or split image
+            progress(f"      network {task_id} ({current['i']}/{current['n']}) {time.perf_counter() - t:.1f}s")
+        return out
+
+    engine = SegmentationEngine(ctx, predict_with_progress)
 
     def task_obj(name):
         return TOTAL_FAST if (name == "total" and opt.fast_total) else TASKS[name]
@@ -219,14 +256,26 @@ def analyze(
         return img_out
 
     try:
+        progress(f"Running {len(order)} segmentation step(s): {', '.join(_STEP_NAMES.get(n, n) for n in order)}")
         with _Timer(stats, "segmentation"):
-            for name in order:
+            for step, name in enumerate(order, 1):
                 if name in crop_tasks:
                     # Normally already submitted by the callback; this also surfaces errors
                     source = "total" if use_total_crop else "rough"
                     src_img = final_futures["total" if use_total_crop else "_rough"].result()
                     submit_prep(name, lambda n=name, s=src_img: crop_prep(n, s, source))
+                task = ROUGH if name == "_rough" else task_obj(name)
+                n_folds = (1 if opt.fast_bca else 5) if task.kind == "bca" else 1
+                detail = f"{len(task.task_ids)} networks" if task.multimodel else (
+                    f"{n_folds}-fold ensemble" if n_folds > 1 else "1 network")
+                progress(f"  [{step}/{len(order)}] {_STEP_NAMES.get(name, name)} ({detail}) ...")
                 prep = prep_futures[name].result()
+                if prep.empty:
+                    progress(f"      crop region not found -> empty {name}")
+                split = engine.will_split(prep, bca_force_split and task.kind == "bca")
+                if split:
+                    progress("      large image: predicting in 3 overlapping parts")
+                current.update(name=name, i=0, n=len(task.task_ids) * (3 if split else 1))
                 t0 = time.perf_counter()
                 if name == "_rough":
                     seg = engine.infer(prep)
@@ -237,11 +286,15 @@ def analyze(
                     seg = engine.infer(prep)
                 gpu_time[name] = round(time.perf_counter() - t0, 3)
                 logger.info("Model %s inferred in %.2fs", name, gpu_time[name])
+                remaining = len(order) - step
+                progress(f"  [{step}/{len(order)}] {_STEP_NAMES.get(name, name)} done in {gpu_time[name]:.1f}s"
+                         + (f", {remaining} step(s) remaining" if remaining else ""))  # fmt: skip
                 final_futures[name] = executor.submit(finalize, name, prep, seg)
                 if name == "_rough":
                     submit_crop_preps(final_futures[name], "rough")
                 elif name == "total" and use_total_crop:
                     submit_crop_preps(final_futures[name], "total")
+            progress("Finishing segmentations (resampling back, post-processing, saving) ...")
             for name in tasks:
                 res.segmentations[name] = final_futures[name].result()
         stats["inference_time_per_model"] = gpu_time
@@ -252,6 +305,7 @@ def analyze(
         # ------------------------------------------------------------ metrics
         measured = {n: res.segmentations[n] for n in tasks if TASKS[n].kind == "ts"}
         if measured:
+            progress("Computing measurements ...")
             with _Timer(stats, "measurements"):
                 res.measurements, pfav = compute_measurements(ctx.orig, measured, opt.cnr_adjustment)
                 if pfav is not None and save:
@@ -262,6 +316,8 @@ def analyze(
 
         bca_future = None
         if run_bca:
+
+            progress("Computing body composition (tissues, BCA measurements) ...")
 
             def run_bca_fn():
                 with _Timer(stats, "bca"):
@@ -311,10 +367,12 @@ def analyze(
             f.result()
 
         if opt.contrast and "total" in tasks and save:
+            progress("Predicting contrast phase (if boa-contrast is installed) ...")
             info += _contrast(ct_path or output_dir / f"image{ext}", ctx, output_dir, ext, stats)
 
         res.info = info
         if output_dir is not None and opt.excel:
+            progress("Writing output.xlsx ...")
             with _Timer(stats, "excel"):
                 res.excel_path = write_excel(output_dir / "output.xlsx", info, regions_df, cnr_df, res.bca_measurements)
     except BaseException:
@@ -326,6 +384,7 @@ def analyze(
     if output_dir is not None:
         (output_dir / "boa_light_stats.json").write_text(json.dumps(stats, indent=2, default=str))
     logger.info("Complete CT analysis: DONE in %.2fs", stats["total_time"])
+    progress(f"Done in {stats['total_time']:.1f}s" + (f" -> {output_dir}" if output_dir is not None else ""))
     return res
 
 

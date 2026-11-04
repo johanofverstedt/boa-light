@@ -30,10 +30,9 @@ def _run(args) -> int:
         keep_models_loaded=not args.low_memory,
         download=not args.no_download,
         fast_export=not args.no_fast_export,
+        progress=not args.quiet,
     )
-    res = analyze(args.input, args.output, opt)
-    t = res.stats.get("total_time")
-    print(f"Done in {t:.1f}s. Results in {args.output}")
+    analyze(args.input, args.output, opt)
     return 0
 
 
@@ -100,6 +99,7 @@ def build_parser() -> argparse.ArgumentParser:
         "and the L3 body axes (MaxAxisL3_cm etc.)",
     )  # fmt: skip
     r.add_argument("--save-format", choices=["nii.gz", "nii", "none"], default="nii.gz")
+    r.add_argument("-q", "--quiet", action="store_true", help="No progress messages")
     r.add_argument("--threads", type=int, default=4, help="CPU worker threads (default 4)")
     r.add_argument("--low-memory", action="store_true", help="Unload each network after use")
     r.add_argument("--no-download", action="store_true", help="Fail instead of downloading missing weights")

@@ -114,7 +114,7 @@ tests, also set `BOA_SRC=/path/to/Body-and-Organ-Analysis` and optionally
 
 `boa-light run --help`. Key flags: `--device auto|cuda|cuda:1|cpu`, `--fast-total`, `--fast-bca`,
 `--crop-source rough|total`, `--bca-skip-body-parts` (skip the `body_parts` model; drops the
-"no extremities" BCA measurements and the L3 body axes), `--cnr-adjustment`, `--save-format nii.gz|nii|none`, `--threads N`,
+"no extremities" BCA measurements and the L3 body axes), `--cnr-adjustment`, `--save-format nii.gz|nii|none`, `--threads N`, `-q/--quiet` (no progress messages),
 `--low-memory` (unload networks after use), `--no-fast-export` (nnU-Net's CPU argmax). Weights live in
 `$BOA_LIGHT_WEIGHTS`, `$TOTALSEG_WEIGHTS_PATH` or `~/.totalsegmentator/nnunet/results`.
 

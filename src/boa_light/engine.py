@@ -157,6 +157,14 @@ class SegmentationEngine:
                 combined[seg == jdx] = class_map_inv[class_name]
         return combined
 
+    @staticmethod
+    def will_split(prep: Prepared, force_split: bool = False) -> bool:
+        """TotalSegmentator's rule for splitting large images into three z-parts."""
+        if prep.empty:
+            return False
+        ss = prep.img_in_rsp.shape
+        return bool((np.prod(ss) > NR_VOXELS_SPLIT_THR and ss[2] > 200 and prep.task.multimodel) or force_split)
+
     def infer(self, prep: Prepared, folds=None, force_split: bool = False) -> np.ndarray | None:
         if prep.empty:
             return None
@@ -164,7 +172,7 @@ class SegmentationEngine:
         folds = task.folds if folds is None else folds
         img = prep.img_in_rsp
         ss = img.shape
-        do_split = (np.prod(ss) > NR_VOXELS_SPLIT_THR and ss[2] > 200 and task.multimodel) or force_split
+        do_split = self.will_split(prep, force_split)
         if not do_split:
             return self._predict_parts(task, img, folds)
 
