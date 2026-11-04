@@ -53,6 +53,17 @@ python -m pip install --no-build-isolation "./[dicom]"           # DICOM folder 
 python -m pip install --no-build-isolation "./[dicom,contrast]"  # + contrast phase prediction (boa-contrast)
 ```
 
+To update to a newer version later, unpack it and reinstall with `--force-reinstall`
+(otherwise pip may keep the installed copy):
+
+```bash
+python -m pip install --no-build-isolation --force-reinstall --no-deps ./
+boa-light --version
+```
+
+If you change the code yourself, install it in editable mode instead (`pip install -e`); edits then take
+effect without reinstalling.
+
 Always use `python -m pip` (not bare `pip`). This guarantees the pip of the active environment
 is used.
 
