@@ -195,3 +195,15 @@ def test_bca_postprocessing_matches_boa_reference(seed):
     np.testing.assert_array_equal(
         bca.postprocess_regions(r), bca.postprocess_regions(r, _filter=bca._filter_largest_unique_segment_reference)
     )
+
+
+def test_merge_part_labels_matches_totalsegmentator_loop():
+    from boa_light.engine import _merge_part_labels_reference, merge_part_labels, part_label_lut
+
+    rng = np.random.default_rng(5)
+    a, b = np.zeros((40, 30, 20), np.uint8), np.zeros((40, 30, 20), np.uint8)
+    for tid in (291, 292, 293, 294, 295):
+        seg = rng.integers(0, 30, a.shape).astype(np.uint8)  # includes labels the part map lacks
+        _merge_part_labels_reference(a, seg, "total", tid)
+        merge_part_labels(b, seg, part_label_lut("total", tid))
+        np.testing.assert_array_equal(a, b)

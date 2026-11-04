@@ -152,13 +152,11 @@ class SegmentationEngine:
             if return_folds:
                 return self.predict_fn(task.task_ids[0], img, folds, task.step_size, return_folds=True)
             return self.predict_fn(task.task_ids[0], img, folds, task.step_size)
-        class_map_inv = {v: k for k, v in class_map[task.label_map_key].items()}
         combined = np.zeros(img.shape, dtype=np.uint8)
         for tid in task.task_ids:
             # the same input goes through all part models -> nnU-Net preprocessing can be shared
             seg = self.predict_fn(tid, img, folds, task.step_size, shared_input=True)
-            for jdx, class_name in class_map_5_parts[map_taskid_to_partname_ct[tid]].items():
-                combined[seg == jdx] = class_map_inv[class_name]
+            merge_part_labels(combined, seg, part_label_lut(task.label_map_key, tid))
         return (combined, None) if return_folds else combined
 
     @staticmethod
@@ -244,6 +242,32 @@ class SegmentationEngine:
     def run(self, task: Task, crop_mask=None, crop_key=None, folds=None, force_split=False):
         prep = self.prepare(task, crop_mask, crop_key)
         return self.finalize(prep, self.infer(prep, folds=folds, force_split=force_split))
+
+
+def part_label_lut(label_map_key: str, task_id: int) -> np.ndarray:
+    """Lookup table: label of a part model -> label in the combined map (0 = not mapped)."""
+    class_map_inv = {v: k for k, v in class_map[label_map_key].items()}
+    lut = np.zeros(256, dtype=np.uint8)
+    for jdx, class_name in class_map_5_parts[map_taskid_to_partname_ct[task_id]].items():
+        lut[jdx] = class_map_inv[class_name]
+    return lut
+
+
+def merge_part_labels(combined: np.ndarray, seg: np.ndarray, lut: np.ndarray) -> None:
+    """In place: ``combined[seg == j] = lut[j]`` for every mapped label j, in one pass.
+
+    Equivalent to TotalSegmentator's per-label loop (the labels of one part model are
+    disjoint, and voxels with unmapped labels are left untouched).
+    """
+    mapped = lut[seg]
+    np.copyto(combined, mapped, where=mapped > 0)
+
+
+def _merge_part_labels_reference(combined, seg, label_map_key, task_id) -> None:
+    """TotalSegmentator's original loop (reference for the tests)."""
+    class_map_inv = {v: k for k, v in class_map[label_map_key].items()}
+    for jdx, class_name in class_map_5_parts[map_taskid_to_partname_ct[task_id]].items():
+        combined[seg == jdx] = class_map_inv[class_name]
 
 
 def roi_mask(label_img: nib.Nifti1Image, rois, label_map_key: str = "total") -> np.ndarray:
