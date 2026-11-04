@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import warnings
 from pathlib import Path
 
 import nibabel as nib
@@ -86,7 +87,11 @@ class ModelPool:
                 configuration_name = ckpt["init_args"]["configuration"]
                 mirroring_axes = ckpt.get("inference_allowed_mirroring_axes")
             parameters.append(ckpt["network_weights"])
-        configuration_manager = plans_manager.get_configuration(configuration_name)
+        with warnings.catch_warnings():
+            # The TotalSegmentator v2.0 weights use the old plans format; nnU-Net converts it to
+            # the identical architecture (a mismatch would fail the strict load_state_dict below).
+            warnings.filterwarnings("ignore", message="Detected old nnU-Net plans format")
+            configuration_manager = plans_manager.get_configuration(configuration_name)
         num_input_channels = determine_num_input_channels(plans_manager, configuration_manager, dataset_json)
         label_manager = plans_manager.get_label_manager(dataset_json)
         # The trainers used by these models only change training (epochs / mirroring
