@@ -221,6 +221,9 @@ def test_label_resampling_integer_path_identical(target):
     img = nib.Nifti1Image(seg, np.diag([1.5, 1.5, 1.5, 1]))
     new = change_spacing(img, [1.5] * 3, target, order=0, dtype=np.uint8, force_affine=np.eye(4))
     zoom = np.array(target) / np.array(seg.shape)
-    ref = ndimage.zoom(seg.astype(np.float64), zoom, mode="nearest", order=0).astype(np.uint8)
+    if np.all(zoom == 1):  # change_spacing returns the input unchanged (equal spacing)
+        ref = seg
+    else:
+        ref = ndimage.zoom(seg.astype(np.float64), zoom, mode="nearest", order=0).astype(np.uint8)
     assert np.asanyarray(new.dataobj).dtype == np.uint8
     np.testing.assert_array_equal(np.asanyarray(new.dataobj), ref)
