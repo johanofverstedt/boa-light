@@ -64,59 +64,126 @@ def _list(_args) -> int:
     return 0
 
 
+def _models_help() -> str:
+    lines = ["models (combine with '+', e.g. -m total+bca+liver_vessels):"]
+    lines.append(f"  {'all':27s} default: {'+'.join(ALL_DEFAULT)}")
+    lines.append(f"  {'bca':27s} Body Composition Analysis: adds total, body_parts, body_regions and")
+    lines.append(f"  {'':27s} derives tissues.nii.gz + bca-measurements.json")
+    for name, t in TASKS.items():
+        extra = " (not in 'all')" if name not in ALL_DEFAULT and t.kind != "bca" else ""
+        lines.append(f"  {name:27s} {t.description}{extra}")
+    return "\n".join(lines)
+
+
+RUN_EXAMPLES = """examples:
+  boa-light run ct.nii.gz out/                         all open models (like BOA --models all)
+  boa-light run dicom_dir/ out/ -m total+bca           DICOM input (needs the [dicom] extra)
+  boa-light run ct.nii.gz out/ -m bca --bca-skip-body-parts
+                                                       BCA without the body_parts model
+  boa-light run ct.nii.gz out/ -m total --fast-total   quick 3 mm TotalSegmentator only
+  boa-light run ct.nii.gz out/ --fast-bca --crop-source total
+                                                       fastest full run (not identical to BOA)
+
+outputs (in OUTPUT): <model>.nii.gz label images, tissues.nii.gz, ct_pfav.nii.gz,
+  total-measurements.json, bca-measurements.json, vertebrae.json, output.xlsx,
+  boa_light_stats.json (timings)
+
+weights are stored in $BOA_LIGHT_WEIGHTS, $TOTALSEG_WEIGHTS_PATH or
+  ~/.totalsegmentator/nnunet/results (shared with TotalSegmentator)"""
+
+
 def build_parser() -> argparse.ArgumentParser:
+    fmt = argparse.RawDescriptionHelpFormatter
     p = argparse.ArgumentParser(
         prog="boa-light",
+        formatter_class=fmt,
         description="Fast, lightweight BOA (Body and Organ Analysis) / TotalSegmentator runner "
         "using only openly licensed models.",
+        epilog="commands:\n"
+        "  boa-light run --help        options for analysing a CT\n"
+        "  boa-light download --help   pre-fetch model weights\n"
+        "  boa-light list              models and installed weights\n\n" + _models_help(),
     )
     p.add_argument("--version", action="version", version=f"boa-light {__version__}")
-    p.add_argument("-v", "--verbose", action="store_true", help="Print progress logs")
-    sub = p.add_subparsers(dest="command", required=True)
+    p.add_argument("-v", "--verbose", action="store_true", help="detailed log output")
+    sub = p.add_subparsers(dest="command", required=True, metavar="{run,download,list}")
 
-    r = sub.add_parser("run", help="Analyse one CT (NIfTI file or DICOM directory)")
-    r.add_argument("input", type=Path, help="Input .nii/.nii.gz file or DICOM series directory")
-    r.add_argument("output", type=Path, help="Output directory")
-    r.add_argument(
-        "-m", "--models", default="all",
-        help=f"'+'-separated models or 'all' (default). Available: {', '.join(SELECTABLE)}",
+    # ------------------------------------------------------------------ run
+    r = sub.add_parser(
+        "run",
+        help="analyse one CT (NIfTI file or DICOM directory)",
+        formatter_class=fmt,
+        description="Segment one CT with the selected models and compute BOA's measurements.",
+        epilog=_models_help() + "\n\n" + RUN_EXAMPLES,
+    )
+    r.add_argument("input", type=Path, help="input .nii / .nii.gz file or DICOM series directory")
+    r.add_argument("output", type=Path, help="output directory (created if missing)")
+    r.add_argument("-v", "--verbose", action="store_true", default=argparse.SUPPRESS, help="detailed log output")
+    r.add_argument("-q", "--quiet", action="store_true", help="no progress messages")
+
+    g = r.add_argument_group("model selection")
+    g.add_argument(
+        "-m", "--models", default="all", metavar="MODELS",
+        help="'+'-separated list of models, or 'all' (default). See the model list below.",
     )  # fmt: skip
-    r.add_argument("-d", "--device", default="auto", help="auto (default), cuda, cuda:<id>, cpu, mps")
-    r.add_argument("--fast-total", action="store_true", help="Use the 3 mm TotalSegmentator model")
-    r.add_argument("--fast-bca", action="store_true", help="Use one fold instead of the 5-fold BCA ensemble")
-    r.add_argument(
-        "--crop-source", choices=["rough", "total"], default="rough",
-        help="ROI masks for the cropped subtasks: 'rough' = 6 mm model, computed once (identical to "
-        "BOA, default); 'total' = reuse the full 'total' segmentation (no extra model)",
-    )  # fmt: skip
-    r.add_argument("--cnr-adjustment", action="store_true", help="Add CNR-adjusted aorta/autochthon sheet")
-    r.add_argument("--skip-contrast-information", action="store_true", help="Skip boa-contrast prediction")
-    r.add_argument("--bca-median-filtering", action="store_true")
-    r.add_argument("--bca-examined-body-region", choices=["abdomen", "neck", "thorax"], default=None)
-    r.add_argument(
+    g.add_argument(
         "--bca-skip-body-parts", action="store_true",
-        help="Do not run the body_parts model for bca: omits the 'no extremities' BCA measurements "
-        "and the L3 body axes (MaxAxisL3_cm etc.)",
+        help="run bca without the body_parts model (saves a 5-fold network). Omits only the "
+        "'no extremities' BCA measurements (bca-slice-measurements_no_ext sheet, *_NoExtremities "
+        "rows) and the L3 body axes (MaxAxisL3_cm, MinAxisL3_cm, MeanAxisL3_cm)",
     )  # fmt: skip
-    r.add_argument("--save-format", choices=["nii.gz", "nii", "none"], default="nii.gz")
-    r.add_argument("-q", "--quiet", action="store_true", help="No progress messages")
-    r.add_argument("--threads", type=int, default=4, help="CPU worker threads (default 4)")
-    r.add_argument("--low-memory", action="store_true", help="Unload each network after use")
-    r.add_argument("--no-download", action="store_true", help="Fail instead of downloading missing weights")
-    r.add_argument(
-        "--no-fast-export", action="store_true",
-        help="Use nnU-Net's own CPU argmax instead of the (equivalent) GPU argmax",
+
+    g = r.add_argument_group("speed / accuracy trade-offs (default: identical to BOA)")
+    g.add_argument("--fast-total", action="store_true",
+                   help="use the single 3 mm TotalSegmentator model instead of the five 1.5 mm models")
+    g.add_argument("--fast-bca", action="store_true",
+                   help="use fold 0 only instead of the 5-fold ensembles for body_parts/body_regions")
+    g.add_argument(
+        "--crop-source", choices=["rough", "total"], default="rough",
+        help="where the ROI masks for the cropped models (lung_vessels, liver_vessels, ...) come "
+        "from: 'rough' = 6 mm total model, run once (identical to BOA, default); 'total' = the full "
+        "'total' segmentation (one network less, slightly different crops)",
     )  # fmt: skip
+
+    g = r.add_argument_group("analysis options")
+    g.add_argument("--cnr-adjustment", action="store_true",
+                   help="add the 'cnr-adjusted' sheet (eroded aorta/autochthon measurements)")
+    g.add_argument("--skip-contrast-information", action="store_true",
+                   help="skip contrast phase prediction (only runs if boa-contrast is installed)")
+    g.add_argument("--bca-median-filtering", action="store_true",
+                   help="in-plane 3x3 median filter on the CT before tissue classification")
+    g.add_argument("--bca-examined-body-region", choices=["abdomen", "neck", "thorax"], default=None,
+                   help="force the BCA aggregation region instead of detecting it")
+
+    g = r.add_argument_group("hardware and output")
+    g.add_argument("-d", "--device", default="auto",
+                   help="auto (default: cuda if available), cuda, cuda:<id>, cpu, mps")
+    g.add_argument("--save-format", choices=["nii.gz", "nii", "none"], default="nii.gz",
+                   help="segmentation file format; 'nii' is faster to write, 'none' writes no images")
+    g.add_argument("--threads", type=int, default=4, help="CPU worker threads (default 4)")
+    g.add_argument("--low-memory", action="store_true",
+                   help="unload each network after use (less GPU memory, slower)")
+    g.add_argument("--no-download", action="store_true", help="fail instead of downloading missing weights")
+    g.add_argument("--no-fast-export", action="store_true",
+                   help="use nnU-Net's own CPU argmax instead of the (identical, faster) GPU argmax")
     r.set_defaults(func=_run)
 
-    d = sub.add_parser("download", help="Download model weights")
-    d.add_argument("-m", "--models", default="all")
-    d.add_argument("--fast-total", action="store_true", help="Also fetch the 3 mm 'total' model")
-    d.add_argument("--bca-skip-body-parts", action="store_true", help="Do not fetch the body_parts model")
-    d.add_argument("--everything", action="store_true", help="Fetch every supported network")
+    # ------------------------------------------------------------- download
+    d = sub.add_parser(
+        "download",
+        help="download model weights",
+        formatter_class=fmt,
+        description="Download the weights needed for the given models (only missing ones).",
+        epilog=_models_help() + "\n\nexample:\n  boa-light download -m total+bca --bca-skip-body-parts",
+    )
+    d.add_argument("-m", "--models", default="all", metavar="MODELS", help="as for 'run' (default: all)")
+    d.add_argument("--fast-total", action="store_true", help="also fetch the 3 mm 'total' model")
+    d.add_argument("--bca-skip-body-parts", action="store_true", help="do not fetch the body_parts model")
+    d.add_argument("--everything", action="store_true", help="fetch every supported network")
     d.set_defaults(func=_download)
 
-    ls = sub.add_parser("list", help="List models and installed weights")
+    # ----------------------------------------------------------------- list
+    ls = sub.add_parser("list", help="list models and installed weights")
     ls.set_defaults(func=_list)
     return p
 
@@ -124,7 +191,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     logging.basicConfig(
-        level=logging.INFO if args.verbose else logging.WARNING,
+        level=logging.INFO if getattr(args, "verbose", False) else logging.WARNING,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
     return args.func(args)
