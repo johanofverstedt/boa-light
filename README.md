@@ -6,8 +6,13 @@ A small, pip-installable and faster way to run
 It uses **only openly licensed models**, has **no PDF report**, and produces the same
 segmentations, `*-measurements.json` files and `output.xlsx` as BOA.
 
+See **[INSTALL.md](INSTALL.md)** for step-by-step installation in a conda environment. In short:
+
 ```bash
-pip install "boa-light[dicom]"          # needs torch; install the CUDA build of torch first for GPU use
+conda create -n boa_light python=3.11 && conda activate boa_light
+conda install pip setuptools
+python -m pip install torch --index-url https://download.pytorch.org/whl/cu124   # matching your CUDA
+python -m pip install --no-build-isolation "./[dicom]"
 boa-light download                      # fetch weights once (~5 GB; reuses ~/.totalsegmentator)
 boa-light run ct.nii.gz out/            # all open models, like BOA's "--models all"
 boa-light run dicom_dir/ out/ -m total+bca --fast-bca
