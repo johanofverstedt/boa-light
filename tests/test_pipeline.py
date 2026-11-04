@@ -207,3 +207,20 @@ def test_merge_part_labels_matches_totalsegmentator_loop():
         _merge_part_labels_reference(a, seg, "total", tid)
         merge_part_labels(b, seg, part_label_lut("total", tid))
         np.testing.assert_array_equal(a, b)
+
+
+@pytest.mark.parametrize("target", [(97, 81, 230), (40, 33, 20), (61, 50, 115)])
+def test_label_resampling_integer_path_identical(target):
+    """order-0 resampling of uint8 labels == TotalSegmentator's float64 path."""
+    from scipy import ndimage
+
+    from boa_light.imaging import change_spacing
+
+    rng = np.random.default_rng(2)
+    seg = rng.integers(0, 118, (61, 50, 115)).astype(np.uint8)
+    img = nib.Nifti1Image(seg, np.diag([1.5, 1.5, 1.5, 1]))
+    new = change_spacing(img, [1.5] * 3, target, order=0, dtype=np.uint8, force_affine=np.eye(4))
+    zoom = np.array(target) / np.array(seg.shape)
+    ref = ndimage.zoom(seg.astype(np.float64), zoom, mode="nearest", order=0).astype(np.uint8)
+    assert np.asanyarray(new.dataobj).dtype == np.uint8
+    np.testing.assert_array_equal(np.asanyarray(new.dataobj), ref)

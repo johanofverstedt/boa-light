@@ -121,7 +121,15 @@ def change_spacing(
 
     Port of ``totalsegmentator.resampling.change_spacing`` (CPU path).
     """
-    data = img_in.get_fdata()
+    raw = np.asanyarray(img_in.dataobj)
+    if order == 0 and raw.dtype.kind in "ui" and dtype is not None and np.dtype(dtype).kind in "ui" \
+            and isinstance(img_in.dataobj, np.ndarray):
+        # Label maps: nearest-neighbour interpolation copies values, so resampling the
+        # integer array directly gives exactly what TotalSegmentator's float64 path gives
+        # (8x less memory traffic).
+        data = raw
+    else:
+        data = img_in.get_fdata()
     old_shape = np.array(data.shape)
     img_spacing = np.array(img_in.header.get_zooms())[:3]
 
