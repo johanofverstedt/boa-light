@@ -101,7 +101,7 @@ boa-light -v run ct.nii.gz out_light/
 python scripts/compare_outputs.py out_boa/ out_light/
 ```
 
-Developer tests (no torch needed): `pip install -e .[test] && pytest`. To include the BOA equivalence
+Developer tests (no torch needed): `pip install -e ".[test]" && pytest`. To include the BOA equivalence
 tests, also set `BOA_SRC=/path/to/Body-and-Organ-Analysis` and optionally
 `TS_EXAMPLE_CT=/path/to/TotalSegmentator/tests/reference_files/example_ct.nii.gz`.
 

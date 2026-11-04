@@ -1,13 +1,13 @@
 [build-system]
-requires = ["hatchling>=1.18"]
-build-backend = "hatchling.build"
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "boa-light"
 dynamic = ["version"]
 description = "Fast, lightweight runner for BOA (Body and Organ Analysis) and TotalSegmentator using only openly licensed models"
 readme = "README.md"
-license = "Apache-2.0"
+license = { text = "Apache-2.0" }
 requires-python = ">=3.10"
 authors = [{ name = "Johan Öfverstedt" }]
 keywords = ["ct", "segmentation", "nnunet", "totalsegmentator", "body composition"]
@@ -35,11 +35,11 @@ test = ["pytest"]
 [project.scripts]
 boa-light = "boa_light.cli:main"
 
-[tool.hatch.version]
-path = "src/boa_light/__init__.py"
+[tool.setuptools.dynamic]
+version = { attr = "boa_light.__version__" }
 
-[tool.hatch.build.targets.wheel]
-packages = ["src/boa_light"]
+[tool.setuptools.packages.find]
+where = ["src"]
 
 [tool.ruff]
 line-length = 110
