@@ -155,7 +155,8 @@ class SegmentationEngine:
         class_map_inv = {v: k for k, v in class_map[task.label_map_key].items()}
         combined = np.zeros(img.shape, dtype=np.uint8)
         for tid in task.task_ids:
-            seg = self.predict_fn(tid, img, folds, task.step_size)
+            # the same input goes through all part models -> nnU-Net preprocessing can be shared
+            seg = self.predict_fn(tid, img, folds, task.step_size, shared_input=True)
             for jdx, class_name in class_map_5_parts[map_taskid_to_partname_ct[tid]].items():
                 combined[seg == jdx] = class_map_inv[class_name]
         return (combined, None) if return_folds else combined

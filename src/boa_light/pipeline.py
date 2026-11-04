@@ -19,7 +19,7 @@ import pandas as pd
 
 from boa_light import __version__
 from boa_light.bca import body_region_flags, compute_bca_measurements, postprocess_nifti, subclassify_tissues
-from boa_light.imaging import lps_shape_spacing
+from boa_light.imaging import lps_shape_spacing, set_resample_workers
 from boa_light.engine import ImageContext, PredictFn, Prepared, SegmentationEngine, roi_mask
 from boa_light.measurements import compute_measurements, segmentator_metrics
 from boa_light.models import CROP_TASKS, ROUGH, TASKS, TOTAL_FAST, networks_for, resolve_models
@@ -47,6 +47,8 @@ class Options:
     fast_export: bool = True  # argmax on the GPU (identical result, much faster)
     progress: bool = True  # print progress messages to stderr
     export_folds: bool = False  # also save the label map of every fold of ensemble models
+    tile_batch: int = 1  # >1: several sliding-window tiles per forward pass (opt-in, ~identical)
+    resample_threads: int | None = None  # threads for (bit-identical) parallel resampling; None = all CPUs
     download: bool = True
     weights_root: Path | None = None
 
@@ -120,6 +122,7 @@ def analyze(
     ``predict_fn`` can replace the nnU-Net model pool (used for testing).
     """
     opt = options or Options()
+    set_resample_workers(opt.resample_threads)
     progress = _Progress(opt.progress)
     res = Result()
     stats = res.stats
@@ -187,7 +190,7 @@ def analyze(
                 progress(f"Downloading weights for {len(missing)} network(s): {missing}")
             with _Timer(stats, "download_weights"):
                 weights.ensure(ids, opt.weights_root)
-        pool = ModelPool(opt.device, opt.weights_root, keep_loaded=opt.keep_models_loaded)
+        pool = ModelPool(opt.device, opt.weights_root, keep_loaded=opt.keep_models_loaded, tile_batch=opt.tile_batch)
         pool.fast_export = opt.fast_export
         predict_fn = pool.predict
         stats["device"] = str(pool.device)

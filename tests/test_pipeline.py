@@ -134,3 +134,21 @@ def test_cli_parser():
     assert args.models == "total+bca" and args.fast_bca and args.device == "auto"
     assert not args.measurements
     assert build_parser().parse_args(["run", "a", "b", "--reports"]).measurements
+
+
+@pytest.mark.parametrize(
+    "shape,zoom,order",
+    [((61, 47, 33), (1.37, 0.8, 2.5), 3), ((40, 41, 90), (2.0, 2.0, 0.21), 3),
+     ((50, 40, 30), (0.5, 3.0, 1.0), 0), ((33, 70, 20), (1.1, 1.1, 1.1), 1), ((5, 6, 7), (1.0, 1.0, 1.0), 3)],
+)  # fmt: skip
+def test_parallel_zoom_identical(shape, zoom, order):
+    from scipy import ndimage
+
+    from boa_light.imaging import parallel_zoom
+
+    a = np.random.default_rng(1).normal(0, 300, shape).round()
+    # (scipy's own all-ones early exit returns a copy; compare to that directly so that torch
+    # stubs from other tests cannot interfere with scipy's array-API dispatch)
+    ref = a.copy() if all(z == 1 for z in zoom) else ndimage.zoom(a, zoom, order=order, mode="nearest")
+    for workers in (2, 3, 7):
+        np.testing.assert_array_equal(parallel_zoom(a, zoom, order=order, workers=workers), ref)

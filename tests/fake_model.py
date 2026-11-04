@@ -69,7 +69,7 @@ def fake_network(task_id: int, arr_zyx: np.ndarray, spacing_zyx) -> np.ndarray:
     return lab.astype(np.uint8)
 
 
-def fake_predict_fn(task_id, img, folds, step_size, return_folds=False):
+def fake_predict_fn(task_id, img, folds, step_size, return_folds=False, shared_input=False):
     """Signature of ``ModelPool.predict``. Per-fold outputs differ from the ensemble."""
     data = np.asanyarray(img.dataobj).astype(np.float32)
     zyx = data.transpose(2, 1, 0)

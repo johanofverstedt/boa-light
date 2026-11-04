@@ -148,9 +148,9 @@ def skip_parts(both, tall_ct, tmp_path_factory):
     out = tmp_path_factory.mktemp("bl_skip")
     calls = []
 
-    def recording_predict(task_id, img, folds, step):
+    def recording_predict(task_id, img, folds, step, **kwargs):
         calls.append(task_id)
-        return fake_predict_fn(task_id, img, folds, step)
+        return fake_predict_fn(task_id, img, folds, step, **kwargs)
 
     analyze(
         tall_ct, out,

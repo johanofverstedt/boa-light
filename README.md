@@ -71,6 +71,14 @@ BOA_light runs everything in one process and reuses all shared work:
   which gives an identical result.
 * **CPU and GPU work overlap.** Preparation, resampling back, saving, BCA post-processing and
   measurements run in worker threads while the GPU segments the next task.
+* **Resampling uses all CPU cores, with bit-identical output.** scipy's spline resampling is
+  single-threaded. BOA_light splits both of its steps (prefilter and interpolation) into independent
+  blocks and runs them in parallel threads (`--resample-threads`).
+* **Shared nnU-Net preprocessing for the five `total` networks.** nnU-Net's crop-to-nonzero step,
+  which includes a full-volume hole filling, runs once instead of five times. Only the intensity
+  normalisation differs per network.
+* **Opt-in tile batching** (`--tile-batch N`) runs several sliding-window tiles per network call.
+  This can be faster on large GPUs. The results may differ from BOA in the last bits.
 * **Faster measurements.** Per-structure statistics are computed inside each label's bounding box,
   with identical values.
 * **Smaller install.** No PDF report (weasyprint/Chromium/plotly/vtk), no Docker, no Celery or PACS
@@ -116,7 +124,7 @@ tests, also set `BOA_SRC=/path/to/Body-and-Organ-Analysis` and optionally
 
 `boa-light run --help`. Key flags: `--device auto|cuda|cuda:1|cpu`, `--fast-total`, `--fast-bca`,
 `--crop-source rough|total`, `--export-folds` (also save each fold of the ensemble models to `folds/<model>_fold<k>.nii.gz`), `--bca-skip-body-parts` (skip the `body_parts` model; drops the
-"no extremities" BCA measurements and the L3 body axes), `--cnr-adjustment`, `--save-format nii.gz|nii|none`, `--threads N`, `-q/--quiet` (no progress messages),
+"no extremities" BCA measurements and the L3 body axes), `--cnr-adjustment`, `--save-format nii.gz|nii|none`, `--threads N`, `--resample-threads N`, `--tile-batch N`, `-q/--quiet` (no progress messages),
 `--low-memory` (unload networks after use), `--no-fast-export` (nnU-Net's CPU argmax). Weights live in
 `$BOA_LIGHT_WEIGHTS`, `$TOTALSEG_WEIGHTS_PATH` or `~/.totalsegmentator/nnunet/results`.
 

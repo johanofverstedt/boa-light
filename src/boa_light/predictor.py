@@ -46,16 +46,27 @@ def resolve_device(device: str = "auto"):
 class ModelPool:
     """Lazily loads nnU-Net networks and keeps them for reuse."""
 
-    def __init__(self, device: str = "auto", weights_root: Path | None = None, keep_loaded: bool = True):
+    def __init__(
+        self,
+        device: str = "auto",
+        weights_root: Path | None = None,
+        keep_loaded: bool = True,
+        tile_batch: int = 1,
+        share_preprocessing: bool = True,
+    ):
         import torch
 
         self.device = resolve_device(device)
         self.weights_root = weights_root
         self.keep_loaded = keep_loaded
+        self.tile_batch = max(1, int(tile_batch))
+        self.share_preprocessing = share_preprocessing
         self._predictors: dict[tuple, object] = {}
         self._lock = threading.Lock()
         if self.device.type == "cuda":
             torch.backends.cudnn.benchmark = True
+        if share_preprocessing:
+            _install_crop_cache()
 
     # ------------------------------------------------------------------ #
     def _load(self, task_id: int, folds, step_size: float):
@@ -130,6 +141,8 @@ class ModelPool:
             # Weights are already in the network; skip re-loading them on every call.
             predictor.list_of_parameters = [network.state_dict()]
         predictor.boa_light_folds = list(folds)
+        if self.tile_batch > 1:
+            _enable_tile_batching(predictor, self.tile_batch)
         logger.info("Loaded network %s (folds %s) on %s", task_id, list(folds), self.device)
         return predictor
 
@@ -153,13 +166,29 @@ class ModelPool:
 
     # ------------------------------------------------------------------ #
     def predict(self, task_id: int, img: nib.Nifti1Image, folds=(0,), step_size: float = 0.5,
-                return_folds: bool = False):
+                return_folds: bool = False, shared_input: bool = False):
         """Segment a (canonical, resampled) NIfTI image; returns a uint8 array (x, y, z).
 
         With ``return_folds`` returns ``(ensemble, {fold id: segmentation})`` (None instead
         of the dict for single-fold models). The ensemble is computed exactly as nnU-Net does.
+
+        ``shared_input=True`` marks ``img`` as being segmented by several networks in a row
+        (the five "total" models): nnU-Net's crop-to-nonzero step is then computed once
+        and reused (identical result).
         """
         predictor = self.get(task_id, folds, step_size)
+        _CROP_CACHE["key"] = (
+            (img, tuple(predictor.plans_manager.transpose_forward))
+            if shared_input and self.share_preprocessing else None
+        )  # fmt: skip
+        try:
+            return self._predict(task_id, predictor, img, return_folds)
+        finally:
+            _CROP_CACHE["key"] = None
+            if not shared_input:
+                _CROP_CACHE["entry"] = None
+
+    def _predict(self, task_id, predictor, img, return_folds):
         data = np.asanyarray(img.dataobj).astype(np.float32, copy=False)
         array = np.ascontiguousarray(data.transpose(2, 1, 0))[None]
         spacing = [float(s) for s in img.header.get_zooms()[:3]][::-1]
@@ -266,3 +295,102 @@ class ModelPool:
         bbox = props["bbox_used_for_cropping"]
         seg[tuple(slice(int(lo), int(hi)) for lo, hi in bbox)] = seg_cropped
         return seg.transpose(predictor.plans_manager.transpose_backward)
+
+
+# ---------------------------------------------------------------------------- #
+# Shared preprocessing: cache nnU-Net's crop_to_nonzero for repeated inputs
+# ---------------------------------------------------------------------------- #
+
+_CROP_CACHE: dict = {"key": None, "entry": None}
+
+
+def _install_crop_cache() -> None:
+    """Wrap ``crop_to_nonzero`` in nnU-Net's default preprocessor with a one-entry cache.
+
+    The five "total" networks receive the identical image; nnU-Net would compute the
+    nonzero mask (incl. a full-volume ``binary_fill_holes``) and the crop five times.
+    The cache is only active while ``ModelPool.predict(..., shared_input=True)`` runs,
+    is keyed on the image object, the transpose and the array shape, and returns copies,
+    so the per-network normalisation (done in place by nnU-Net) cannot leak between
+    networks. Results are identical to running without the cache.
+    """
+    import copy
+
+    try:
+        import nnunetv2.preprocessing.preprocessors.default_preprocessor as dp
+    except ImportError:  # pragma: no cover
+        return
+    if getattr(dp.crop_to_nonzero, "_boa_light_cached", False):
+        return
+    original = dp.crop_to_nonzero
+
+    def crop_to_nonzero(data, seg=None, nonzero_label=-1):
+        key = _CROP_CACHE["key"]
+        if key is None or seg is not None:
+            return original(data, seg, nonzero_label)
+        full_key = (key, data.shape, str(data.dtype), nonzero_label)
+        entry = _CROP_CACHE["entry"]
+        if entry is not None and entry[0] == full_key:
+            d, sg, bbox = entry[1]
+            return d.copy(), sg.copy(), copy.deepcopy(bbox)
+        d, sg, bbox = original(data, seg, nonzero_label)
+        _CROP_CACHE["entry"] = (full_key, (d.copy(), sg.copy(), copy.deepcopy(bbox)))
+        return d, sg, bbox
+
+    crop_to_nonzero._boa_light_cached = True
+    dp.crop_to_nonzero = crop_to_nonzero
+
+
+# ---------------------------------------------------------------------------- #
+# Opt-in: several sliding-window tiles per forward pass
+# ---------------------------------------------------------------------------- #
+
+
+def _enable_tile_batching(predictor, batch_size: int) -> None:
+    """Replace nnU-Net's one-tile-at-a-time sliding window by a batched one.
+
+    Same tiles, Gaussian weighting, half-precision accumulation (in the same tile
+    order) and normalisation as nnU-Net's ``_internal_predict_sliding_window_return_logits``;
+    only the network sees ``batch_size`` tiles at once. The math is the same, but GPU
+    kernels for different batch sizes may differ in the last bits, so results can
+    differ very slightly from BOA. Opt-in for that reason.
+    """
+    import types
+
+    import torch
+    from nnunetv2.inference.sliding_window_prediction import compute_gaussian
+    from nnunetv2.utilities.helpers import empty_cache
+
+    @torch.inference_mode()
+    def batched(self, data, slicers, do_on_device: bool = True):
+        results_device = self.device if do_on_device else torch.device("cpu")
+        empty_cache(self.device)
+        data = data.to(results_device)
+        predicted_logits = torch.zeros(
+            (self.label_manager.num_segmentation_heads, *data.shape[1:]), dtype=torch.half, device=results_device
+        )
+        n_predictions = torch.zeros(data.shape[1:], dtype=torch.half, device=results_device)
+        if self.use_gaussian:
+            gaussian = compute_gaussian(
+                tuple(self.configuration_manager.patch_size), sigma_scale=1.0 / 8, value_scaling_factor=10,
+                device=results_device,
+            )  # fmt: skip
+        else:
+            gaussian = 1
+        for i in range(0, len(slicers), batch_size):
+            group = slicers[i : i + batch_size]
+            x = torch.cat([data[sl][None] for sl in group]).to(self.device, memory_format=torch.contiguous_format)
+            out = self._internal_maybe_mirror_and_predict(x)
+            for j, sl in enumerate(group):
+                prediction = out[j].to(results_device)
+                if self.use_gaussian:
+                    prediction *= gaussian
+                predicted_logits[sl] += prediction
+                n_predictions[sl[1:]] += gaussian
+            del out, x
+        torch.div(predicted_logits, n_predictions, out=predicted_logits)
+        if torch.any(torch.isinf(predicted_logits)):
+            raise RuntimeError("Encountered inf in predicted array (tile batching). Run without --tile-batch.")
+        return predicted_logits
+
+    predictor._internal_predict_sliding_window_return_logits = types.MethodType(batched, predictor)

@@ -11,6 +11,7 @@ no file I/O, and integer output buffers where TotalSegmentator used float64.
 from __future__ import annotations
 
 import logging
+import os
 
 import nibabel as nib
 import numpy as np
@@ -24,9 +25,88 @@ logger = logging.getLogger(__name__)
 # --------------------------------------------------------------------------- #
 
 
+_RESAMPLE_WORKERS = max(1, os.cpu_count() or 1)
+_PARALLEL_MIN_VOXELS = 1_000_000  # below this, threading overhead is not worth it
+
+
+def set_resample_workers(n: int | None) -> None:
+    """Number of threads used by :func:`parallel_zoom` (default: all CPUs)."""
+    global _RESAMPLE_WORKERS
+    _RESAMPLE_WORKERS = max(1, int(n)) if n else max(1, os.cpu_count() or 1)
+
+
+def _chunks(n: int, parts: int) -> list[tuple[int, int]]:
+    parts = max(1, min(parts, n))
+    edges = np.linspace(0, n, parts + 1).round().astype(int)
+    return [(int(a), int(b)) for a, b in zip(edges[:-1], edges[1:]) if b > a]
+
+
+def parallel_zoom(img: np.ndarray, zoom, order: int = 0, workers: int | None = None) -> np.ndarray:
+    """Bit-identical, multi-threaded ``scipy.ndimage.zoom(img, zoom, order=order, mode="nearest")``.
+
+    scipy's zoom is single-threaded. It consists of (1) a spline prefilter that is applied
+    line by line along each axis and (2) interpolation of every output voxel from the
+    filtered coefficients. Both steps release the GIL and are split into independent
+    pieces here: the prefilter by blocks of lines, the interpolation by blocks of output
+    slices (using ``zoom_shift`` with an integer shift, so the sampling coordinates are
+    computed exactly as in the single call). The result is identical to ``ndimage.zoom``.
+    Falls back to ``ndimage.zoom`` if scipy's internals are not as expected.
+    """
+    workers = workers or _RESAMPLE_WORKERS
+    img = np.asarray(img)
+    if workers <= 1 or img.ndim != 3 or img.size < _PARALLEL_MIN_VOXELS or np.iscomplexobj(img):
+        return ndimage.zoom(img, zoom, mode="nearest", order=order)
+    try:
+        from scipy.ndimage import _nd_image, _ni_support
+    except ImportError:  # pragma: no cover
+        return ndimage.zoom(img, zoom, mode="nearest", order=order)
+
+    zoom = _ni_support._normalize_sequence(zoom, img.ndim)
+    output_shape = tuple(int(round(ii * jj)) for ii, jj in zip(img.shape, zoom))
+    if all(z == 1 for z in zoom):  # scipy's early exit
+        return img.copy()
+    output = np.empty(output_shape, dtype=img.dtype)
+
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        if order > 1:
+            npad = 12  # _prepad_for_spline_filter for mode="nearest"
+            filtered = np.pad(img, npad, mode="edge").astype(np.float64)
+            for axis in range(3):
+                split_axis = (axis + 1) % 3 if filtered.shape[(axis + 1) % 3] >= filtered.shape[(axis + 2) % 3] \
+                    else (axis + 2) % 3  # fmt: skip
+
+                def run(a, b, axis=axis, split_axis=split_axis):
+                    sl = [slice(None)] * 3
+                    sl[split_axis] = slice(a, b)
+                    view = filtered[tuple(sl)]
+                    ndimage.spline_filter1d(view, order, axis, output=view, mode="nearest")
+
+                list(pool.map(lambda ab: run(*ab), _chunks(filtered.shape[split_axis], workers * 2)))
+        else:
+            npad = 0
+            filtered = img
+        mode = _ni_support._extend_mode_to_code("nearest")
+        zoom_div = np.array(output_shape) - 1
+        zoom_nom = np.array(img.shape) - 1
+        zoom_arr = np.divide(zoom_nom, zoom_div, out=np.ones(3, dtype=np.float64), where=zoom_div != 0)
+        zoom_arr = np.ascontiguousarray(zoom_arr)
+
+        def interp(a, b):
+            shift = np.ascontiguousarray([float(a), 0.0, 0.0])
+            _nd_image.zoom_shift(filtered, zoom_arr, shift, output[a:b], order, mode, 0.0, npad, False)
+
+        try:
+            list(pool.map(lambda ab: interp(*ab), _chunks(output_shape[0], workers * 2)))
+        except TypeError:  # private API changed -> plain scipy
+            return ndimage.zoom(img, zoom, mode="nearest", order=order)
+    return output
+
+
 def resample_img(img: np.ndarray, zoom, order: int = 0) -> np.ndarray:
-    """``ndimage.zoom`` with mode="nearest" (TotalSegmentator ``resample_img``)."""
-    return ndimage.zoom(img, zoom, mode="nearest", order=order)
+    """``ndimage.zoom`` with mode="nearest" (TotalSegmentator ``resample_img``), multi-threaded."""
+    return parallel_zoom(img, zoom, order=order)
 
 
 def change_spacing(

@@ -33,6 +33,8 @@ def _run(args) -> int:
         fast_export=not args.no_fast_export,
         progress=not args.quiet,
         export_folds=args.export_folds,
+        tile_batch=args.tile_batch,
+        resample_threads=args.resample_threads,
     )
     analyze(args.input, args.output, opt)
     return 0
@@ -155,6 +157,13 @@ def build_parser() -> argparse.ArgumentParser:
         "'total' segmentation (one network less, slightly different crops)",
     )  # fmt: skip
 
+    g.add_argument(
+        "--tile-batch", type=int, default=1, metavar="N",
+        help="run N sliding-window tiles per network call (default 1 = nnU-Net behaviour). 2-4 can be "
+        "faster on large GPUs and needs more GPU memory; results may differ from BOA in rare voxels "
+        "because GPU kernels for other batch sizes round differently",
+    )  # fmt: skip
+
     g = r.add_argument_group("measurements and reports (off by default: only label images are written)")
     g.add_argument(
         "--measurements", "--reports", action="store_true",
@@ -177,7 +186,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="auto (default: cuda if available), cuda, cuda:<id>, cpu, mps")
     g.add_argument("--save-format", choices=["nii.gz", "nii", "none"], default="nii.gz",
                    help="segmentation file format; 'nii' is faster to write, 'none' writes no images")
-    g.add_argument("--threads", type=int, default=4, help="CPU worker threads (default 4)")
+    g.add_argument("--threads", type=int, default=4, help="CPU worker threads for overlapping tasks (default 4)")
+    g.add_argument("--resample-threads", type=int, default=None,
+                   help="threads per image resampling (default: all CPUs; results are identical for any value)")
     g.add_argument("--low-memory", action="store_true",
                    help="unload each network after use (less GPU memory, slower)")
     g.add_argument("--no-download", action="store_true", help="fail instead of downloading missing weights")

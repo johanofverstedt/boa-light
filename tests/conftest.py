@@ -8,6 +8,13 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent))
 
+# Always exercise the multi-threaded resampling in the tests (also for small images), so
+# the BOA/TotalSegmentator equivalence tests cover it.
+import boa_light.imaging as _imaging  # noqa: E402
+
+_imaging._PARALLEL_MIN_VOXELS = 0
+_imaging.set_resample_workers(3)
+
 TS_EXAMPLE = os.environ.get(
     "TS_EXAMPLE_CT", str(Path(__file__).parent / "data" / "example_ct.nii.gz")
 )
