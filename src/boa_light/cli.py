@@ -32,6 +32,7 @@ def _run(args) -> int:
         download=not args.no_download,
         fast_export=not args.no_fast_export,
         progress=not args.quiet,
+        export_folds=args.export_folds,
     )
     analyze(args.input, args.output, opt)
     return 0
@@ -133,6 +134,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="run bca without the body_parts model (saves a 5-fold network). Omits only the "
         "'no extremities' BCA measurements (bca-slice-measurements_no_ext sheet, *_NoExtremities "
         "rows) and the L3 body axes (MaxAxisL3_cm, MinAxisL3_cm, MeanAxisL3_cm)",
+    )  # fmt: skip
+
+    g.add_argument(
+        "--export-folds", action="store_true",
+        help="for ensemble models (body_parts, body_regions: 5 folds; pleural_pericard_effusion: all "
+        "available folds) also save the label map of every fold to OUTPUT/folds/<model>_fold<k>.nii.gz. "
+        "No extra network passes; the ensemble result is unchanged. Ignored with --fast-bca for BCA",
     )  # fmt: skip
 
     g = r.add_argument_group("speed / accuracy trade-offs (default: identical to BOA)")

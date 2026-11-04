@@ -46,6 +46,7 @@ class Options:
     keep_models_loaded: bool = True
     fast_export: bool = True  # argmax on the GPU (identical result, much faster)
     progress: bool = True  # print progress messages to stderr
+    export_folds: bool = False  # also save the label map of every fold of ensemble models
     download: bool = True
     weights_root: Path | None = None
 
@@ -53,6 +54,7 @@ class Options:
 @dataclass
 class Result:
     segmentations: dict[str, nib.Nifti1Image] = field(default_factory=dict)
+    fold_segmentations: dict[str, dict[int, nib.Nifti1Image]] = field(default_factory=dict)
     measurements: dict[str, Any] | None = None
     bca_measurements: dict[str, Any] | None = None
     info: list[dict[str, Any]] = field(default_factory=list)
@@ -192,9 +194,9 @@ def analyze(
     current = {"name": "", "i": 0, "n": 0}
     base_predict = predict_fn
 
-    def predict_with_progress(task_id, img, folds, step_size):
+    def predict_with_progress(task_id, img, folds, step_size, **kwargs):
         t = time.perf_counter()
-        out = base_predict(task_id, img, folds, step_size)
+        out = base_predict(task_id, img, folds, step_size, **kwargs)
         current["i"] += 1
         if current["n"] > 1:  # multi-network task or split image
             progress(f"      network {task_id} ({current['i']}/{current['n']}) {time.perf_counter() - t:.1f}s")
@@ -248,12 +250,26 @@ def analyze(
         if n == "total" or n in ("body_parts", "body_regions"):
             submit_prep(n, lambda n=n: engine.prepare(task_obj(n)))
 
-    def finalize(name: str, prep: Prepared, seg):
+    def finalize_one(name: str, prep: Prepared, seg, path: Path | None):
         img_out = engine.finalize(prep, seg)
         if name in ("body_parts", "body_regions"):
             img_out = postprocess_nifti(img_out, name)
-        if save and not name.startswith("_"):
-            save_futures.append(executor.submit(_save, img_out, output_dir / f"{name}{ext}"))
+        if save and path is not None:
+            save_futures.append(executor.submit(_save, img_out, path))
+        return img_out
+
+    def finalize(name: str, prep: Prepared, seg, fold_segs=None):
+        img_out = finalize_one(name, prep, seg, None if name.startswith("_") else output_dir / f"{name}{ext}"
+                               if output_dir is not None else None)  # fmt: skip
+        if fold_segs:
+            # Each fold gets the same post-processing as the ensemble (resampling back,
+            # undo crop/reorientation, BCA clean-up), so the files are directly comparable.
+            if save:
+                (output_dir / "folds").mkdir(exist_ok=True)
+            res.fold_segmentations[name] = {
+                f: finalize_one(name, prep, fs, output_dir / "folds" / f"{name}_fold{f}{ext}" if save else None)
+                for f, fs in fold_segs.items()
+            }
         return img_out
 
     try:
@@ -278,19 +294,22 @@ def analyze(
                     progress("      large image: predicting in 3 overlapping parts")
                 current.update(name=name, i=0, n=len(task.task_ids) * (3 if split else 1))
                 t0 = time.perf_counter()
-                if name == "_rough":
-                    seg = engine.infer(prep)
-                elif name in ("body_parts", "body_regions"):
+                fold_segs = None
+                export = opt.export_folds and name != "_rough"
+                if name in ("body_parts", "body_regions"):
                     folds = (0,) if opt.fast_bca else None
-                    seg = engine.infer(prep, folds=folds, force_split=bca_force_split)
+                    out = engine.infer(prep, folds=folds, force_split=bca_force_split, return_folds=export)
                 else:
-                    seg = engine.infer(prep)
+                    out = engine.infer(prep, return_folds=export)
+                seg, fold_segs = out if export else (out, None)
+                if fold_segs:
+                    progress(f"      exporting {len(fold_segs)} fold label maps to folds/")
                 gpu_time[name] = round(time.perf_counter() - t0, 3)
                 logger.info("Model %s inferred in %.2fs", name, gpu_time[name])
                 remaining = len(order) - step
                 progress(f"  [{step}/{len(order)}] {_STEP_NAMES.get(name, name)} done in {gpu_time[name]:.1f}s"
                          + (f", {remaining} step(s) remaining" if remaining else ""))  # fmt: skip
-                final_futures[name] = executor.submit(finalize, name, prep, seg)
+                final_futures[name] = executor.submit(finalize, name, prep, seg, fold_segs)
                 if name == "_rough":
                     submit_crop_preps(final_futures[name], "rough")
                 elif name == "total" and use_total_crop:

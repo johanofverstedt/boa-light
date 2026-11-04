@@ -69,9 +69,21 @@ def fake_network(task_id: int, arr_zyx: np.ndarray, spacing_zyx) -> np.ndarray:
     return lab.astype(np.uint8)
 
 
-def fake_predict_fn(task_id, img, folds, step_size):
-    """Signature of ``ModelPool.predict``."""
+def fake_predict_fn(task_id, img, folds, step_size, return_folds=False):
+    """Signature of ``ModelPool.predict``. Per-fold outputs differ from the ensemble."""
     data = np.asanyarray(img.dataobj).astype(np.float32)
     zyx = data.transpose(2, 1, 0)
     spacing = [float(s) for s in img.header.get_zooms()[:3]][::-1]
-    return fake_network(task_id, zyx, spacing).transpose(2, 1, 0)
+    seg = fake_network(task_id, zyx, spacing).transpose(2, 1, 0)
+    if not return_folds:
+        return seg
+    fold_ids = list(range(5)) if folds is None else list(folds)
+    if len(fold_ids) < 2:
+        return seg, None
+    n = N_LABELS[task_id]
+    per_fold = {}
+    for f in fold_ids:
+        fs = seg.copy()
+        fs[fs > 0] = (fs[fs > 0].astype(np.int64) + f) % n + 1  # deterministic, fold dependent
+        per_fold[f] = fs.astype(np.uint8)
+    return seg, per_fold

@@ -85,6 +85,50 @@ def test_default_writes_only_labels(tmp_path):
     assert res.measurements is None and res.bca_measurements is None and res.excel_path is None
 
 
+@pytest.mark.parametrize("fast_bca", [False, True])
+def test_export_folds(tmp_path, fast_bca):
+    p = tmp_path / "ct.nii.gz"
+    nib.save(_synthetic_ct(), p)
+    ref = analyze(p, tmp_path / "ref", Options(models="all", fast_bca=fast_bca), predict_fn=fake_predict_fn)
+    out = tmp_path / "out"
+    res = analyze(p, out, Options(models="all", fast_bca=fast_bca, export_folds=True), predict_fn=fake_predict_fn)
+    expected = set() if fast_bca else {"body_parts", "body_regions"}
+    if np.asanyarray(res.segmentations["pleural_pericard_effusion"].dataobj).any():  # crop may be empty
+        expected.add("pleural_pericard_effusion")
+    assert set(res.fold_segmentations) == expected
+    for name in expected:
+        assert sorted(res.fold_segmentations[name]) == [0, 1, 2, 3, 4]
+        for f in range(5):
+            img = nib.load(out / "folds" / f"{name}_fold{f}.nii.gz")
+            assert img.shape == res.segmentations[name].shape
+        # the ensemble output is unchanged by --export-folds
+        np.testing.assert_array_equal(
+            np.asanyarray(nib.load(out / f"{name}.nii.gz").dataobj),
+            np.asanyarray(nib.load(tmp_path / "ref" / f"{name}.nii.gz").dataobj),
+        )
+    assert ref.fold_segmentations == {}
+
+
+def test_export_folds_with_split():
+    from boa_light.engine import ImageContext, SegmentationEngine
+    from boa_light.models import TASKS
+
+    ct = _synthetic_ct()
+    data = np.asanyarray(ct.dataobj)
+    tall = nib.Nifti1Image(np.concatenate([data] * 6, axis=2), ct.affine)
+    eng = SegmentationEngine(ImageContext(tall), fake_predict_fn)
+    prep = eng.prepare(TASKS["body_regions"])
+    seg, folds = eng.infer(prep, force_split=True, return_folds=True)
+    np.testing.assert_array_equal(seg, eng.infer(prep, force_split=True))
+    assert sorted(folds) == [0, 1, 2, 3, 4] and all(f.shape == seg.shape for f in folds.values())
+    # all-folds model (folds=None), uncropped here
+    prep = eng.prepare(TASKS["pleural_pericard_effusion"])
+    seg, folds = eng.infer(prep, return_folds=True)
+    assert len(folds) == 5
+    # single-fold models report no folds
+    assert eng.infer(eng.prepare(TASKS["liver_vessels"]), return_folds=True)[1] is None
+
+
 def test_cli_parser():
     args = build_parser().parse_args(["run", "in.nii.gz", "out", "-m", "total+bca", "--fast-bca"])
     assert args.models == "total+bca" and args.fast_bca and args.device == "auto"

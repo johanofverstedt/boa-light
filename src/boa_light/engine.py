@@ -146,8 +146,11 @@ class SegmentationEngine:
     # ------------------------------------------------------------------ #
     # Inference (GPU)
     # ------------------------------------------------------------------ #
-    def _predict_parts(self, task: Task, img: nib.Nifti1Image, folds) -> np.ndarray:
+    def _predict_parts(self, task: Task, img: nib.Nifti1Image, folds, return_folds: bool = False):
+        """Returns the segmentation, or (segmentation, per-fold segmentations | None)."""
         if not task.multimodel:
+            if return_folds:
+                return self.predict_fn(task.task_ids[0], img, folds, task.step_size, return_folds=True)
             return self.predict_fn(task.task_ids[0], img, folds, task.step_size)
         class_map_inv = {v: k for k, v in class_map[task.label_map_key].items()}
         combined = np.zeros(img.shape, dtype=np.uint8)
@@ -155,7 +158,7 @@ class SegmentationEngine:
             seg = self.predict_fn(tid, img, folds, task.step_size)
             for jdx, class_name in class_map_5_parts[map_taskid_to_partname_ct[tid]].items():
                 combined[seg == jdx] = class_map_inv[class_name]
-        return combined
+        return (combined, None) if return_folds else combined
 
     @staticmethod
     def will_split(prep: Prepared, force_split: bool = False) -> bool:
@@ -165,16 +168,20 @@ class SegmentationEngine:
         ss = prep.img_in_rsp.shape
         return bool((np.prod(ss) > NR_VOXELS_SPLIT_THR and ss[2] > 200 and prep.task.multimodel) or force_split)
 
-    def infer(self, prep: Prepared, folds=None, force_split: bool = False) -> np.ndarray | None:
+    def infer(self, prep: Prepared, folds=None, force_split: bool = False, return_folds: bool = False):
+        """Segment a prepared input.
+
+        Returns the segmentation (or None for an empty crop). With ``return_folds`` returns
+        ``(segmentation, {fold id: segmentation})``; the dict is None for single-fold models.
+        """
         if prep.empty:
-            return None
+            return (None, None) if return_folds else None
         task = prep.task
         folds = task.folds if folds is None else folds
         img = prep.img_in_rsp
         ss = img.shape
-        do_split = self.will_split(prep, force_split)
-        if not do_split:
-            return self._predict_parts(task, img, folds)
+        if not self.will_split(prep, force_split):
+            return self._predict_parts(task, img, folds, return_folds)
 
         logger.info("Splitting into subparts...")
         data = np.asanyarray(img.dataobj)
@@ -185,12 +192,21 @@ class SegmentationEngine:
             data[:, :, third + 1 - m : third * 2 + m],
             data[:, :, third * 2 + 1 - m :],
         ]
-        segs = [self._predict_parts(task, nib.Nifti1Image(p, img.affine), folds) for p in pieces]
-        combined = np.zeros(ss, dtype=np.uint8)
-        combined[:, :, :third] = segs[0][:, :, :-m]
-        combined[:, :, third : third * 2] = segs[1][:, :, m - 1 : -m]
-        combined[:, :, third * 2 :] = segs[2][:, :, m - 1 :]
-        return combined
+        results = [self._predict_parts(task, nib.Nifti1Image(p, img.affine), folds, return_folds) for p in pieces]
+
+        def stitch(segs):
+            combined = np.zeros(ss, dtype=np.uint8)
+            combined[:, :, :third] = segs[0][:, :, :-m]
+            combined[:, :, third : third * 2] = segs[1][:, :, m - 1 : -m]
+            combined[:, :, third * 2 :] = segs[2][:, :, m - 1 :]
+            return combined
+
+        if not return_folds:
+            return stitch(results)
+        seg = stitch([r[0] for r in results])
+        if results[0][1] is None:
+            return seg, None
+        return seg, {f: stitch([r[1][f] for r in results]) for f in results[0][1]}
 
     # ------------------------------------------------------------------ #
     # Finalisation (CPU)

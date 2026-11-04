@@ -129,6 +129,7 @@ class ModelPool:
         if len(parameters) == 1:
             # Weights are already in the network; skip re-loading them on every call.
             predictor.list_of_parameters = [network.state_dict()]
+        predictor.boa_light_folds = list(folds)
         logger.info("Loaded network %s (folds %s) on %s", task_id, list(folds), self.device)
         return predictor
 
@@ -151,12 +152,25 @@ class ModelPool:
             torch.cuda.empty_cache()
 
     # ------------------------------------------------------------------ #
-    def predict(self, task_id: int, img: nib.Nifti1Image, folds=(0,), step_size: float = 0.5) -> np.ndarray:
-        """Segment a (canonical, resampled) NIfTI image; returns a uint8 array (x, y, z)."""
+    def predict(self, task_id: int, img: nib.Nifti1Image, folds=(0,), step_size: float = 0.5,
+                return_folds: bool = False):
+        """Segment a (canonical, resampled) NIfTI image; returns a uint8 array (x, y, z).
+
+        With ``return_folds`` returns ``(ensemble, {fold id: segmentation})`` (None instead
+        of the dict for single-fold models). The ensemble is computed exactly as nnU-Net does.
+        """
         predictor = self.get(task_id, folds, step_size)
         data = np.asanyarray(img.dataobj).astype(np.float32, copy=False)
         array = np.ascontiguousarray(data.transpose(2, 1, 0))[None]
         spacing = [float(s) for s in img.header.get_zooms()[:3]][::-1]
+        if return_folds and len(predictor.list_of_parameters) > 1:
+            seg, fold_segs = self._predict_with_folds(predictor, array, spacing)
+            self.release(task_id)
+
+            def back(x):
+                return np.asarray(x).transpose(2, 1, 0).astype(np.uint8)
+
+            return back(seg), {f: back(x) for f, x in zip(predictor.boa_light_folds, fold_segs)}
         seg = None
         if self.fast_export and len(predictor.list_of_parameters) == 1 and self.device.type != "cpu":
             try:
@@ -167,9 +181,56 @@ class ModelPool:
         if seg is None:
             seg = predictor.predict_single_npy_array(array, {"spacing": spacing}, None, None, False)
         self.release(task_id)
-        return np.asarray(seg).transpose(2, 1, 0).astype(np.uint8)
+        out = np.asarray(seg).transpose(2, 1, 0).astype(np.uint8)
+        return (out, None) if return_folds else out
 
     fast_export = True
+
+    @staticmethod
+    def _predict_with_folds(predictor, array: np.ndarray, spacing):
+        """Ensemble prediction that also returns the segmentation of every fold.
+
+        Mirrors ``nnUNetPredictor.predict_logits_from_preprocessed_data`` (fold logits are
+        summed on the CPU in the same order and divided by the number of folds), so the
+        ensemble is identical to ``predict_single_npy_array``. Each fold's logits are
+        exported with the same function nnU-Net uses for the ensemble.
+        """
+        import torch
+        from nnunetv2.inference.data_iterators import PreprocessAdapterFromNpy
+        from nnunetv2.inference.export_prediction import (
+            convert_predicted_logits_to_segmentation_with_correct_shape,
+        )
+
+        ppa = PreprocessAdapterFromNpy(
+            [array], [None], [{"spacing": spacing}], [None],
+            predictor.plans_manager, predictor.dataset_json, predictor.configuration_manager,
+            num_threads_in_multithreaded=1, verbose=False,
+        )  # fmt: skip
+        dct = next(ppa)
+        props = dct["data_properties"]
+
+        def to_seg(logits):
+            return convert_predicted_logits_to_segmentation_with_correct_shape(
+                logits, predictor.plans_manager, predictor.configuration_manager,
+                predictor.label_manager, props, return_probabilities=False,
+            )  # fmt: skip
+
+        network = getattr(predictor.network, "_orig_mod", predictor.network)
+        prediction = None
+        fold_segs = []
+        with torch.inference_mode():
+            for params in predictor.list_of_parameters:
+                network.load_state_dict(params)
+                logits = predictor.predict_sliding_window_return_logits(dct["data"]).to("cpu")
+                fold_segs.append(to_seg(logits.clone()))
+                if prediction is None:
+                    prediction = logits
+                else:
+                    prediction += logits
+            if len(predictor.list_of_parameters) > 1:
+                prediction /= len(predictor.list_of_parameters)
+            seg = to_seg(prediction)
+        return seg, fold_segs
 
     @staticmethod
     def _predict_argmax_on_device(predictor, array: np.ndarray, spacing) -> np.ndarray | None:
