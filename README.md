@@ -118,7 +118,9 @@ python scripts/compare_outputs.py out_boa/ out_light/
 
 Developer tests (no torch needed): `pip install -e ".[test]" && pytest`. To include the BOA equivalence
 tests, also set `BOA_SRC=/path/to/Body-and-Organ-Analysis` and optionally
-`TS_EXAMPLE_CT=/path/to/TotalSegmentator/tests/reference_files/example_ct.nii.gz`.
+`TS_EXAMPLE_CT=/path/to/TotalSegmentator/tests/reference_files/example_ct.nii.gz`. The shared-preprocessing
+test also needs `NNUNET_SRC`, `ACVL_SRC` and `BG_SRC` (nnU-Net, acvl_utils and batchgenerators checkouts) and
+`BOA_LIGHT_WEIGHTS` with networks 291–295.
 
 ## Options
 
