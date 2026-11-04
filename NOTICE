@@ -1,0 +1,21 @@
+BOA_light
+Copyright 2026 Johan Öfverstedt
+
+This product contains code ported from:
+
+* BOA - Body and Organ Analysis (Apache License 2.0)
+  https://github.com/UMEssen/Body-and-Organ-Analysis
+  Copyright IKIM / SHIP-AI, University Hospital Essen
+  (body composition analysis post-processing, tissue derivation, measurements,
+  Excel output, DICOM handling)
+
+* TotalSegmentator (Apache License 2.0)
+  https://github.com/wasserth/TotalSegmentator
+  Copyright Jakob Wasserthal
+  (task definitions, label maps, resampling/cropping/reorientation helpers,
+  NIfTI label-map extension; ported from v2.12.0 as vendored by BOA)
+
+Model weights are downloaded at run time and are not part of this package. Only
+the openly licensed (Apache-2.0) TotalSegmentator models and the BOA body
+composition models are used. Please cite TotalSegmentator, BOA and nnU-Net when
+using this software (see README.md).

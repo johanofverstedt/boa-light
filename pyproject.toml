@@ -1,0 +1,49 @@
+[build-system]
+requires = ["hatchling>=1.18"]
+build-backend = "hatchling.build"
+
+[project]
+name = "boa-light"
+dynamic = ["version"]
+description = "Fast, lightweight runner for BOA (Body and Organ Analysis) and TotalSegmentator using only openly licensed models"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.10"
+authors = [{ name = "Johan Öfverstedt" }]
+keywords = ["ct", "segmentation", "nnunet", "totalsegmentator", "body composition"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Topic :: Scientific/Engineering :: Medical Science Apps.",
+]
+dependencies = [
+  "torch>=2.1",
+  "nnunetv2>=2.4,<2.9",
+  "numpy",
+  "scipy",
+  "nibabel>=4",
+  "scikit-image>=0.19",
+  "opencv-python-headless",
+  "pandas",
+  "xlsxwriter",
+]
+
+[project.optional-dependencies]
+dicom = ["SimpleITK", "pydicom>=2.3"]
+contrast = ["boa-contrast>=0.1.5,<0.2"]
+test = ["pytest"]
+
+[project.scripts]
+boa-light = "boa_light.cli:main"
+
+[tool.hatch.version]
+path = "src/boa_light/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/boa_light"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
