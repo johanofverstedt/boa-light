@@ -158,8 +158,13 @@ ALL_DEFAULT = [
 CROP_TASKS = [n for n, t in TASKS.items() if t.crop is not None]
 
 
-def resolve_models(spec: str | list[str] | None) -> tuple[list[str], bool]:
-    """Turn a "+"-separated model string into (ordered tasks to run, run_bca)."""
+def resolve_models(spec: str | list[str] | None, bca_skip_body_parts: bool = False) -> tuple[list[str], bool]:
+    """Turn a "+"-separated model string into (ordered tasks to run, run_bca).
+
+    With ``bca_skip_body_parts`` the BCA does not add the ``body_parts`` model (it is
+    only needed for the "no extremities" measurements and the L3 body axes); it is
+    still run if requested explicitly.
+    """
     if spec is None or spec == "all" or spec == ["all"]:
         names = list(ALL_DEFAULT)
     else:
@@ -174,7 +179,7 @@ def resolve_models(spec: str | list[str] | None) -> tuple[list[str], bool]:
     tasks: list[str] = []
     run_bca = "bca" in names
     if run_bca:
-        names = ["total", "body_parts", "body_regions", *names]
+        names = ["total", *([] if bca_skip_body_parts else ["body_parts"]), "body_regions", *names]
     for n in ["total", *CROP_TASKS, "body_parts", "body_regions"]:
         if n in names and n not in tasks:
             tasks.append(n)

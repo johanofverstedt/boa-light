@@ -32,7 +32,7 @@ res.measurements                # == out/total-measurements.json
 | model | output | networks |
 |---|---|---|
 | `total` | `total.nii.gz` (117 structures) | 291–295 at 1.5 mm (`--fast-total`: 297 at 3 mm) |
-| `bca` | `body_parts`, `body_regions`, `tissues`, `bca-measurements.json` | 543, 542 (5 folds; `--fast-bca`: 1 fold); adds `total` |
+| `bca` | `body_parts`, `body_regions`, `tissues`, `bca-measurements.json` | 543, 542 (5 folds; `--fast-bca`: 1 fold); adds `total`. `--bca-skip-body-parts` drops 543 |
 | `lung_vessels` | `lung_vessels.nii.gz` | 258 (cropped to the lungs) |
 | `cerebral_bleed` | `cerebral_bleed.nii.gz` | 150 (cropped to the brain) |
 | `hip_implant` | `hip_implant.nii.gz` | 260 (cropped to hips/femurs) |
@@ -113,7 +113,8 @@ tests, also set `BOA_SRC=/path/to/Body-and-Organ-Analysis` and optionally
 ## Options
 
 `boa-light run --help`. Key flags: `--device auto|cuda|cuda:1|cpu`, `--fast-total`, `--fast-bca`,
-`--crop-source rough|total`, `--cnr-adjustment`, `--save-format nii.gz|nii|none`, `--threads N`,
+`--crop-source rough|total`, `--bca-skip-body-parts` (skip the `body_parts` model; drops the
+"no extremities" BCA measurements and the L3 body axes), `--cnr-adjustment`, `--save-format nii.gz|nii|none`, `--threads N`,
 `--low-memory` (unload networks after use), `--no-fast-export` (nnU-Net's CPU argmax). Weights live in
 `$BOA_LIGHT_WEIGHTS`, `$TOTALSEG_WEIGHTS_PATH` or `~/.totalsegmentator/nnunet/results`.
 

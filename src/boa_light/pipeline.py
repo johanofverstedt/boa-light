@@ -38,6 +38,7 @@ class Options:
     contrast: bool = True  # run boa-contrast if installed
     bca_median_filtering: bool = False
     bca_examined_body_region: str | None = None
+    bca_skip_body_parts: bool = False  # no "no extremities" measurements / L3 axes
     save_format: str = "nii.gz"  # "nii.gz" | "nii" | "none"
     excel: bool = True
     threads: int = 4
@@ -101,7 +102,7 @@ def analyze(
     res = Result()
     stats = res.stats
     t_start = time.perf_counter()
-    tasks, run_bca = resolve_models(opt.models)
+    tasks, run_bca = resolve_models(opt.models, opt.bca_skip_body_parts)
     stats.update(
         {
             "boa_light_version": __version__,
@@ -272,7 +273,7 @@ def analyze(
                         save_futures.append(executor.submit(_save, tissues, output_dir / f"tissues{ext}"))
                     bca_json, vertebrae = compute_bca_measurements(
                         ctx.orig,
-                        res.segmentations["body_parts"],
+                        res.segmentations.get("body_parts"),
                         res.segmentations["body_regions"],
                         tissues,
                         res.segmentations.get("total"),
@@ -374,19 +375,20 @@ def bca_tables(bca: dict[str, Any]) -> tuple[pd.DataFrame, pd.DataFrame, pd.Data
     rename_cols = {c: (c.upper() if c not in ["bone", "muscle"] else c.capitalize()) for c in cols}
     rename_cols["index"] = "AggregationType"
     dfs = [pd.DataFrame(columns=["BodyPart", "Present", "AggregationType"])]
+    has_nl = "slices_no_extremities" in bca
     for name in BCA_BODY_REGIONS:
         key = name.lower().replace(" ", "_").replace("-", "_")
         if key not in bca["aggregated"]:
             dfs.append(
                 pd.DataFrame(
-                    [
-                        {"BodyPart": convert_name(key), "Present": False},
-                        {"BodyPart": f"{convert_name(key)}_NoExtremities", "Present": False},
-                    ]
+                    [{"BodyPart": convert_name(key), "Present": False}]
+                    + ([{"BodyPart": f"{convert_name(key)}_NoExtremities", "Present": False}] if has_nl else [])
                 )
             )
             continue
         for meas in ["measurements", "measurements_no_extremities"]:
+            if meas not in bca["aggregated"][key]:
+                continue
             df = (
                 pd.DataFrame.from_dict(bca["aggregated"][key][meas])
                 .rename(index=rename_index)
@@ -399,11 +401,13 @@ def bca_tables(bca: dict[str, Any]) -> tuple[pd.DataFrame, pd.DataFrame, pd.Data
             dfs.append(df)
     agg = pd.concat([d for d in dfs if len(d)] or dfs[:1])
     agg = agg.reindex(columns=list(dict.fromkeys(["BodyPart", "Present", "AggregationType", *agg.columns])))
-    slices = pd.DataFrame(bca["slices"])
-    slices_nl = pd.DataFrame(bca["slices_no_extremities"])
     rename_cols["index"] = "SliceNumber"
     out = []
-    for df in (slices, slices_nl):
+    for key in ("slices", "slices_no_extremities"):
+        if key not in bca:
+            out.append(None)
+            continue
+        df = pd.DataFrame(bca[key])
         df.index = df.index + 1
         out.append(df.reset_index().rename(columns=rename_cols))
     return agg, out[0], out[1]
@@ -431,5 +435,6 @@ def write_excel(path: Path, info, regions_df, cnr_df, bca) -> Path:
             agg, slices, slices_nl = bca_tables(bca)
             agg.to_excel(writer, sheet_name="bca-aggregated-measurements", index=False)
             slices.to_excel(writer, sheet_name="bca-slice-measurements", index=False)
-            slices_nl.to_excel(writer, sheet_name="bca-slice-measurements_no_ext", index=False)
+            if slices_nl is not None:
+                slices_nl.to_excel(writer, sheet_name="bca-slice-measurements_no_ext", index=False)
     return path

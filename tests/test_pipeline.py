@@ -21,6 +21,9 @@ def test_resolve_models():
     assert "heartchambers_highres" not in tasks
     assert resolve_models("liver_vessels") == (["liver_vessels"], False)
     assert resolve_models("bca") == (["total", "body_parts", "body_regions"], True)
+    assert resolve_models("bca", bca_skip_body_parts=True) == (["total", "body_regions"], True)
+    assert resolve_models("bca+body_parts", bca_skip_body_parts=True)[0] == ["total", "body_parts", "body_regions"]
+    assert 543 not in networks_for(resolve_models("all", bca_skip_body_parts=True)[0])
     with pytest.raises(ValueError):
         resolve_models("heartchambers_highres")
 
@@ -62,6 +65,13 @@ def test_in_memory_no_output(tmp_path):
     res = analyze(_synthetic_ct(), None, Options(models="total+liver_vessels", contrast=False), predict_fn=fake_predict_fn)
     assert set(res.segmentations) == {"total", "liver_vessels"}
     assert res.measurements is not None and res.excel_path is None
+
+
+def test_skip_body_parts_without_reference(tmp_path):
+    res = analyze(_synthetic_ct(), tmp_path, Options(models="bca", contrast=False, bca_skip_body_parts=True),
+                  predict_fn=fake_predict_fn)  # fmt: skip
+    assert "body_parts" not in res.segmentations and "tissues" in res.segmentations
+    assert "bca-slice-measurements_no_ext" not in pd.ExcelFile(tmp_path / "output.xlsx").sheet_names
 
 
 def test_cli_parser():

@@ -135,3 +135,69 @@ def test_excel_info_and_regions(both):
     assert len(merged) > 100
     for col in ["VolumeMl", "MeanHU", "StdHU", "MedianHU", "CNR"]:
         np.testing.assert_allclose(merged[f"{col}_a"], merged[f"{col}_b"], rtol=1e-9, equal_nan=True)
+
+
+# --------------------------------------------------------------------------- #
+# --bca-skip-body-parts: same as BOA minus the outputs that need body_parts
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture(scope="module")
+def skip_parts(both, tall_ct, tmp_path_factory):
+    boa_out, _ = both
+    out = tmp_path_factory.mktemp("bl_skip")
+    calls = []
+
+    def recording_predict(task_id, img, folds, step):
+        calls.append(task_id)
+        return fake_predict_fn(task_id, img, folds, step)
+
+    analyze(
+        tall_ct, out,
+        Options(models=MODELS, contrast=False, cnr_adjustment=True, bca_skip_body_parts=True),
+        predict_fn=recording_predict,
+    )  # fmt: skip
+    return boa_out, out, calls
+
+
+def test_skip_body_parts_runs_no_body_parts_model(skip_parts):
+    _, out, calls = skip_parts
+    assert 543 not in calls and 542 in calls
+    assert not (out / "body_parts.nii.gz").exists()
+    for name in ["body_regions", "tissues", "total"]:
+        a = nib.load(skip_parts[0] / f"{name}.nii.gz")
+        b = nib.load(out / f"{name}.nii.gz")
+        np.testing.assert_array_equal(np.asanyarray(a.dataobj), np.asanyarray(b.dataobj))
+
+
+def test_skip_body_parts_bca_json(skip_parts):
+    boa_out, out, _ = skip_parts
+    a = json.loads((boa_out / "bca-measurements.json").read_text())
+    b = json.loads((out / "bca-measurements.json").read_text())
+    a.pop("slices_no_extremities")
+    for group in a["aggregated"].values():
+        group.pop("measurements_no_extremities")
+    assert "slices_no_extremities" not in b
+    assert all("measurements_no_extremities" not in g for g in b["aggregated"].values())
+    _compare(a, b)
+
+
+def test_skip_body_parts_excel(skip_parts):
+    boa_out, out, _ = skip_parts
+    sheets = pd.ExcelFile(out / "output.xlsx").sheet_names
+    assert "bca-slice-measurements_no_ext" not in sheets
+    a = pd.read_excel(boa_out / "output.xlsx", sheet_name="bca-aggregated-measurements")
+    a = a[~a.BodyPart.str.endswith("_NoExtremities")].reset_index(drop=True)
+    b = pd.read_excel(out / "output.xlsx", sheet_name="bca-aggregated-measurements")
+    pd.testing.assert_frame_equal(a, b, check_dtype=False)
+    for sheet in ["bca-slice-measurements", "cnr-adjusted"]:
+        pd.testing.assert_frame_equal(
+            pd.read_excel(boa_out / "output.xlsx", sheet_name=sheet),
+            pd.read_excel(out / "output.xlsx", sheet_name=sheet),
+            check_dtype=False,
+        )
+    ia = pd.read_excel(boa_out / "output.xlsx", sheet_name="info", header=None, index_col=0)[1]
+    ib = pd.read_excel(out / "output.xlsx", sheet_name="info", header=None, index_col=0)[1]
+    assert "MaxAxisL3_cm" in ia.index and "MaxAxisL3_cm" not in ib.index
+    for key in ["Noise", "CNRAorta", "CNRVCI"]:
+        assert np.isclose(float(ia[key]), float(ib[key]))

@@ -24,6 +24,7 @@ def _run(args) -> int:
         contrast=not args.skip_contrast_information,
         bca_median_filtering=args.bca_median_filtering,
         bca_examined_body_region=args.bca_examined_body_region,
+        bca_skip_body_parts=args.bca_skip_body_parts,
         save_format=args.save_format,
         threads=args.threads,
         keep_models_loaded=not args.low_memory,
@@ -39,7 +40,7 @@ def _run(args) -> int:
 def _download(args) -> int:
     from boa_light import weights
 
-    tasks, _ = resolve_models(args.models)
+    tasks, _ = resolve_models(args.models, args.bca_skip_body_parts)
     ids = networks_for(tasks, args.fast_total) if not args.everything else list(NETWORKS)
     if args.fast_total and not args.everything:
         ids = list(dict.fromkeys(ids + networks_for(tasks, False)))
@@ -93,6 +94,11 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--skip-contrast-information", action="store_true", help="Skip boa-contrast prediction")
     r.add_argument("--bca-median-filtering", action="store_true")
     r.add_argument("--bca-examined-body-region", choices=["abdomen", "neck", "thorax"], default=None)
+    r.add_argument(
+        "--bca-skip-body-parts", action="store_true",
+        help="Do not run the body_parts model for bca: omits the 'no extremities' BCA measurements "
+        "and the L3 body axes (MaxAxisL3_cm etc.)",
+    )  # fmt: skip
     r.add_argument("--save-format", choices=["nii.gz", "nii", "none"], default="nii.gz")
     r.add_argument("--threads", type=int, default=4, help="CPU worker threads (default 4)")
     r.add_argument("--low-memory", action="store_true", help="Unload each network after use")
@@ -106,6 +112,7 @@ def build_parser() -> argparse.ArgumentParser:
     d = sub.add_parser("download", help="Download model weights")
     d.add_argument("-m", "--models", default="all")
     d.add_argument("--fast-total", action="store_true", help="Also fetch the 3 mm 'total' model")
+    d.add_argument("--bca-skip-body-parts", action="store_true", help="Do not fetch the body_parts model")
     d.add_argument("--everything", action="store_true", help="Fetch every supported network")
     d.set_defaults(func=_download)
 

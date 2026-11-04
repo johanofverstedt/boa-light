@@ -271,15 +271,18 @@ _ROW_RENAME = {
 
 def compute_bca_measurements(
     ct: nib.Nifti1Image,
-    body_parts: nib.Nifti1Image,
+    body_parts: nib.Nifti1Image | None,
     body_regions: nib.Nifti1Image,
     tissues: nib.Nifti1Image,
     total: nib.Nifti1Image | None,
     examined_body_region: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, tuple[int, int]]]:
-    """Return (bca-measurements.json content, vertebrae.json content)."""
+    """Return (bca-measurements.json content, vertebrae.json content).
+
+    Without ``body_parts`` the "no extremities" measurements are omitted.
+    """
     image_data, spacing = lps_zyx(ct)
-    parts_data, _ = lps_zyx(body_parts)
+    parts_data = lps_zyx(body_parts)[0] if body_parts is not None else None
     region_data, region_spacing = lps_zyx(body_regions)
     tissue_data, _ = lps_zyx(tissues)
 
@@ -296,9 +299,11 @@ def compute_bca_measurements(
         vertebrae = create_vertebrae_info(total_data, part)
 
     ml_per_voxel = np.prod(spacing) / 1000.0
-    torso = parts_data == BodyParts.TORSO
     df = _slicewise(tissue_data, ml_per_voxel)
-    df_no_limbs = _slicewise(tissue_data, ml_per_voxel, torso)
+    torso = df_no_limbs = None
+    if parts_data is not None:
+        torso = parts_data == BodyParts.TORSO
+        df_no_limbs = _slicewise(tissue_data, ml_per_voxel, torso)
 
     # Aggregation groups
     groups = [("Whole Scan", 0, image_data.shape[0])]
@@ -322,24 +327,27 @@ def compute_bca_measurements(
     aggregated = {}
     for name, lo, hi in groups:
         sel = (df.slice_idx >= lo) & (df.slice_idx < hi)
-        sel_nl = (df_no_limbs.slice_idx >= lo) & (df_no_limbs.slice_idx < hi)
         img_r, tis_r = image_data[lo:hi], tissue_data[lo:hi]
         m = _describe(df[sel], img_r, tis_r)
-        m_nl = _describe(df_no_limbs[sel_nl], img_r, np.where(torso[lo:hi], tis_r, 0))
-        aggregated[name.lower().replace(" ", "_").replace("-", "_")] = {
+        entry = {
             "num_slices": int(hi - lo),
             "min_slice_idx": int(lo),
             "max_slice_idx": int(hi),
             "measurements": m.rename(index=_ROW_RENAME, columns=str.lower).to_dict(),
-            "measurements_no_extremities": m_nl.rename(index=_ROW_RENAME, columns=str.lower).to_dict(),
         }
+        if df_no_limbs is not None:
+            sel_nl = (df_no_limbs.slice_idx >= lo) & (df_no_limbs.slice_idx < hi)
+            m_nl = _describe(df_no_limbs[sel_nl], img_r, np.where(torso[lo:hi], tis_r, 0))
+            entry["measurements_no_extremities"] = m_nl.rename(index=_ROW_RENAME, columns=str.lower).to_dict()
+        aggregated[name.lower().replace(" ", "_").replace("-", "_")] = entry
 
     def records(frame):
         return frame.rename(columns=str.lower).drop("slice_idx", axis=1).astype(float).to_dict("records")
 
-    result = {
-        "slices": records(df),
-        "slices_no_extremities": records(df_no_limbs),
+    result = {"slices": records(df)}
+    if df_no_limbs is not None:
+        result["slices_no_extremities"] = records(df_no_limbs)
+    result |= {
         "aggregated": aggregated,
         "body_parts": {
             "abdomen": AggregatableBodyPart.ABDOMEN in part,
