@@ -166,3 +166,32 @@ def test_tissue_lut_matches_boa_rules():
         ref = _subclassify_tissues_masks(data, regions, r_img)
         new = subclassify_tissues(nib.Nifti1Image(data, np.eye(4)), r_img, workers=3)
         np.testing.assert_array_equal(np.asanyarray(ref.dataobj), np.asanyarray(new.dataobj))
+
+
+@pytest.mark.parametrize("seed", range(12))
+def test_bca_postprocessing_matches_boa_reference(seed):
+    from scipy import ndimage
+
+    from boa_light import bca
+
+    rng = np.random.default_rng(seed)
+    shape = tuple(int(x) for x in rng.integers(20, 50, 3))
+    m = np.zeros(shape, np.uint8)
+    for lab in range(1, 7):
+        noise = ndimage.gaussian_filter(rng.normal(size=shape), rng.uniform(1, 3))
+        m[noise > np.quantile(noise, rng.uniform(0.6, 0.97))] = lab
+    if seed % 3 == 0:
+        m[:, :, 5:9] = 3  # label spanning the whole image along two axes
+    if seed % 4 == 0:
+        m[2:6, 2:6, 2:6] = 0
+        m[3, 3, 3] = 4  # tiny object in a tiny box
+    thr = int(rng.choice([5, 50, 300, 3000]))
+    np.testing.assert_array_equal(
+        bca.remove_small_labeled_objects(m, thr, workers=3), bca._remove_small_labeled_objects_reference(m, thr)
+    )
+    r = m.copy()
+    r[rng.random(shape) < 0.002] = 7
+    r[rng.random(shape) < 0.002] = 3
+    np.testing.assert_array_equal(
+        bca.postprocess_regions(r), bca.postprocess_regions(r, _filter=bca._filter_largest_unique_segment_reference)
+    )

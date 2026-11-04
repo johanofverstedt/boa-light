@@ -17,6 +17,7 @@ import nibabel as nib
 import numpy as np
 import pandas as pd
 import scipy.ndimage
+from scipy import ndimage
 import skimage.measure
 from skimage.morphology import remove_small_objects
 
@@ -45,7 +46,122 @@ def _remove_small_objects(mask: np.ndarray, threshold: int) -> None:
         remove_small_objects(mask, min_size=threshold, connectivity=3, out=mask)
 
 
-def remove_small_labeled_objects(mask: np.ndarray, threshold: int = 3000) -> np.ndarray:
+_STRUCT26 = np.ones((3, 3, 3), dtype=bool)
+
+
+def _bbox(mask: np.ndarray, margin: int = 0) -> tuple[slice, ...] | None:
+    """Bounding box of ``mask`` (plus ``margin``, clipped to the array)."""
+    box = []
+    for axis in range(mask.ndim):
+        other = tuple(a for a in range(mask.ndim) if a != axis)
+        idx = np.flatnonzero(mask.any(axis=other))
+        if idx.size == 0:
+            return None
+        box.append(slice(max(0, idx[0] - margin), min(mask.shape[axis], idx[-1] + 1 + margin)))
+    return tuple(box)
+
+
+def _fill_small_holes_in_box(filled: np.ndarray, box: tuple[slice, ...], full_shape, threshold: int) -> None:
+    """Exact equivalent of ``invert -> remove_small_objects -> invert`` on the full volume.
+
+    ``filled`` is the foreground cropped to ``box``; there is no foreground outside the
+    box. In the full volume, background components that touch an inner face of the box
+    merge with the background outside the box, so their size is computed accordingly.
+    The outside is one connected region, except when the box spans the whole image
+    along two axes: then the outside is up to two separate slabs.
+    """
+    labels, n = ndimage.label(~filled, structure=_STRUCT26)
+    if n == 0:
+        return
+    sizes = np.bincount(labels.ravel(), minlength=n + 1).astype(np.int64)
+    sizes[0] = 0
+    full = [sl.start == 0 and sl.stop == full_shape[a] for a, sl in enumerate(box)]
+    total = int(np.prod(full_shape))
+    inner = int(np.prod(filled.shape))
+    # outside regions: list of (size, [(axis, side), ...] faces adjacent to it)
+    if sum(full) == 3:
+        regions = []
+    elif sum(full) == 2:
+        a = full.index(False)
+        plane = total // full_shape[a]
+        regions = []
+        if box[a].start > 0:
+            regions.append((box[a].start * plane, [(a, 0)]))
+        if box[a].stop < full_shape[a]:
+            regions.append(((full_shape[a] - box[a].stop) * plane, [(a, -1)]))
+    else:
+        faces = [(a, side) for a, sl in enumerate(box)
+                 for side, inside in ((0, sl.start > 0), (-1, sl.stop < full_shape[a])) if inside]  # fmt: skip
+        regions = [(total - inner, faces)]
+    # components touching each outside region
+    touch = []
+    for _, faces in regions:
+        t = np.zeros(n + 1, dtype=bool)
+        for a, side in faces:
+            t[np.unique(np.take(labels, side, axis=a))] = True
+        t[0] = False
+        touch.append(t)
+    too_small = sizes < threshold
+    too_small[0] = False
+    if regions:
+        # merge outside regions that share a component (at most two regions)
+        groups = [[0]] if len(regions) == 1 else (
+            [[0, 1]] if np.any(touch[0] & touch[1]) else [[0], [1]])  # fmt: skip
+        for g in groups:
+            members = np.zeros(n + 1, dtype=bool)
+            for i in g:
+                members |= touch[i]
+            merged = int(sizes[members].sum()) + sum(regions[i][0] for i in g)
+            too_small[members] = merged < threshold
+    filled[too_small[labels]] = True
+
+
+def _clean_label(mask: np.ndarray, label: int, threshold: int):
+    """Filled, cleaned mask of one label, restricted to its bounding box: (box, mask) or None."""
+    label_mask_full = mask == label
+    box = _bbox(label_mask_full, margin=1)
+    if box is None:
+        return None
+    label_mask = label_mask_full[box]
+    filled = np.zeros(label_mask.shape, dtype=np.uint8)
+    for i in range(label_mask.shape[0]):
+        contours, _ = cv2.findContours(label_mask[i].astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        cv2.drawContours(filled[i], contours, -1, color=1, thickness=cv2.FILLED)
+    filled = filled.astype(bool)
+    # small foreground objects: the cropped foreground is complete, so this is exact
+    lab, n = ndimage.label(filled, structure=_STRUCT26)
+    if n:
+        sizes = np.bincount(lab.ravel(), minlength=n + 1)
+        small = sizes < threshold
+        small[0] = False
+        filled[small[lab]] = False
+    _fill_small_holes_in_box(filled, box, mask.shape, threshold)
+    return box, filled
+
+
+def remove_small_labeled_objects(mask: np.ndarray, threshold: int = 3000, workers: int | None = None) -> np.ndarray:
+    """BOA's body_parts clean-up (slice-wise contour filling, then removal of small objects
+    and small holes per label), computed per label inside its bounding box and with the
+    labels processed in parallel threads. Identical to the reference implementation;
+    the labels are written in the same order, so overlaps resolve the same way.
+    """
+    import os
+    from concurrent.futures import ThreadPoolExecutor
+
+    labels = [int(v) for v in np.unique(mask) if v > 0]
+    workers = workers or min(len(labels) or 1, os.cpu_count() or 1)
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+        results = list(pool.map(lambda lab: _clean_label(mask, lab, threshold), labels))
+    out = np.zeros(mask.shape, dtype=mask.dtype)
+    for label, res in zip(labels, results):
+        if res is not None:
+            box, filled = res
+            out[box][filled] = label
+    return out
+
+
+def _remove_small_labeled_objects_reference(mask: np.ndarray, threshold: int = 3000) -> np.ndarray:
+    """BOA's original implementation (kept as the reference for the tests)."""
     out = np.zeros(mask.shape, dtype=mask.dtype)
     labels = np.unique(mask)
     for label in labels[labels > 0]:
@@ -66,6 +182,27 @@ def remove_small_labeled_objects(mask: np.ndarray, threshold: int = 3000) -> np.
 
 
 def _filter_largest_unique_segment(segmentation: np.ndarray, mask: np.ndarray) -> None:
+    """Mark all but the largest connected component of ``mask`` with 255 (BOA semantics).
+
+    Works inside the bounding box of the mask, uses one counting pass for the component
+    sizes and one lookup for the marking. Components are numbered in raster order, as
+    by ``skimage.measure.label``, so ties are broken the same way.
+    """
+    box = _bbox(mask)
+    if box is None:
+        return
+    labels, n = ndimage.label(mask[box], structure=_STRUCT26)
+    if n <= 1:
+        return
+    sizes = np.bincount(labels.ravel(), minlength=n + 1)[1:]
+    order = sorted(range(1, n + 1), key=lambda lab: int(sizes[lab - 1]), reverse=True)  # stable, like BOA
+    drop = np.zeros(n + 1, dtype=bool)
+    drop[order[1:]] = True
+    sub = segmentation[box]
+    sub[drop[labels]] = 255
+
+
+def _filter_largest_unique_segment_reference(segmentation: np.ndarray, mask: np.ndarray) -> None:
     labels = skimage.measure.label(mask)
     props = skimage.measure.regionprops(labels)
     if len(props) > 1:
@@ -74,10 +211,11 @@ def _filter_largest_unique_segment(segmentation: np.ndarray, mask: np.ndarray) -
             segmentation[np.equal(labels, prop.label)] = 255
 
 
-def postprocess_regions(seg_data: np.ndarray) -> np.ndarray:
+def postprocess_regions(seg_data: np.ndarray, _filter=None) -> np.ndarray:
+    f = _filter or _filter_largest_unique_segment
     seg_data = seg_data.copy()
-    _filter_largest_unique_segment(seg_data, np.greater(seg_data, 0))
-    _filter_largest_unique_segment(
+    f(seg_data, np.greater(seg_data, 0))
+    f(
         seg_data,
         np.isin(
             seg_data,
@@ -85,7 +223,7 @@ def postprocess_regions(seg_data: np.ndarray) -> np.ndarray:
         ),
     )
     for region in (BodyRegion.PERICARDIUM, BodyRegion.ABDOMINAL_CAVITY):
-        _filter_largest_unique_segment(seg_data, np.equal(seg_data, region.value))
+        f(seg_data, np.equal(seg_data, region.value))
     return seg_data
 
 

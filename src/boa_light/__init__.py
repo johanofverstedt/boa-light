@@ -1,6 +1,6 @@
 """BOA_light: fast, lightweight Body and Organ Analysis (BOA) / TotalSegmentator runner."""
 
-__version__ = "0.15"
+__version__ = "0.16"
 
 __all__ = ["__version__", "analyze", "Options"]
 
