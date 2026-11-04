@@ -172,14 +172,13 @@ class ModelPool:
 
         nnU-Net moves the (half precision) logits of the whole volume to the CPU and
         takes a numpy argmax over the class axis, which for "total" at 1.5 mm is a
-        multi-GB array. When no resampling of the logits is needed (always the case
-        here, the input is already at the network spacing) the argmax can be taken
-        on the device; ``torch.argmax`` and ``numpy.argmax`` both return the first
-        maximum, so the result is identical. Returns None if the shortcut does not
-        apply.
+        multi-GB array. When nnU-Net does not resample (the input is already at the
+        network spacing, true for all TotalSegmentator-resampled tasks) the argmax
+        can be taken on the device; ``torch.argmax`` and ``numpy.argmax`` both return
+        the first maximum, so the result is identical. Returns None (before running
+        the network) if the shortcut does not apply.
         """
         import torch
-        from acvl_utils.cropping_and_padding.bounding_boxes import insert_crop_into_image
         from nnunetv2.inference.data_iterators import PreprocessAdapterFromNpy
 
         if predictor.label_manager.has_regions:
@@ -191,12 +190,13 @@ class ModelPool:
         )  # fmt: skip
         dct = next(ppa)
         props = dct["data_properties"]
+        if tuple(props["shape_after_cropping_and_before_resampling"]) != tuple(dct["data"].shape[1:]):
+            return None  # nnU-Net resampled the input -> logits must be resampled back (stock path)
         with torch.inference_mode():
             logits = predictor.predict_sliding_window_return_logits(dct["data"])
-            if tuple(props["shape_after_cropping_and_before_resampling"]) != tuple(logits.shape[1:]):
-                return None
             seg_cropped = torch.argmax(logits, 0).to(torch.uint8).cpu().numpy()
         del logits
         seg = np.zeros(props["shape_before_cropping"], dtype=np.uint8)
-        seg = insert_crop_into_image(seg, seg_cropped, props["bbox_used_for_cropping"])
+        bbox = props["bbox_used_for_cropping"]
+        seg[tuple(slice(int(lo), int(hi)) for lo, hi in bbox)] = seg_cropped
         return seg.transpose(predictor.plans_manager.transpose_backward)

@@ -122,12 +122,14 @@ def analyze(
 
     # ---------------------------------------------------------------- input
     with _Timer(stats, "load_input"):
+        is_dicom = False
         if isinstance(input_image, nib.Nifti1Image):
             img, dicom_info = input_image, []
             ct_path = None
         else:
+            is_dicom = Path(input_image).is_dir()
             img, dicom_info = load_input(Path(input_image))
-            ct_path = Path(input_image) if not dicom_info else None
+            ct_path = None if is_dicom else Path(input_image)
         ctx = ImageContext(img)
     shape = ctx.orig.shape
     zooms = ctx.orig.header.get_zooms()[:3]
@@ -141,7 +143,7 @@ def analyze(
         )
     stats["num_voxels"] = int(np.prod(shape))
     stats["num_slices"] = int(shape[2])
-    if save and dicom_info:
+    if save and is_dicom:
         _save(ctx.orig, output_dir / f"image{ext}")
         ct_path = output_dir / f"image{ext}"
 
@@ -314,8 +316,10 @@ def analyze(
         if output_dir is not None and opt.excel:
             with _Timer(stats, "excel"):
                 res.excel_path = write_excel(output_dir / "output.xlsx", info, regions_df, cnr_df, res.bca_measurements)
-    finally:
-        executor.shutdown(wait=True)
+    except BaseException:
+        executor.shutdown(wait=True, cancel_futures=True)
+        raise
+    executor.shutdown(wait=True)
 
     stats["total_time"] = round(time.perf_counter() - t_start, 3)
     if output_dir is not None:
