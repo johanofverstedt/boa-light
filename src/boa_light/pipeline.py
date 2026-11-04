@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class Options:
     models: str | list[str] = "all"
+    measurements: bool = False  # False: only label images. True: also JSON/Excel reports (BOA outputs)
     device: str = "auto"
     fast_total: bool = False
     fast_bca: bool = False
@@ -165,7 +166,7 @@ def analyze(
     progress(f"  image {shape}, spacing {tuple(round(float(z), 3) for z in zooms)} mm")
     stats["num_voxels"] = int(np.prod(shape))
     stats["num_slices"] = int(shape[2])
-    if save and is_dicom:
+    if save and is_dicom and opt.measurements:
         _save(ctx.orig, output_dir / f"image{ext}")
         ct_path = output_dir / f"image{ext}"
 
@@ -303,7 +304,7 @@ def analyze(
             ctx.forget(key)
 
         # ------------------------------------------------------------ metrics
-        measured = {n: res.segmentations[n] for n in tasks if TASKS[n].kind == "ts"}
+        measured = {n: res.segmentations[n] for n in tasks if TASKS[n].kind == "ts"} if opt.measurements else {}
         if measured:
             progress("Computing measurements ...")
             with _Timer(stats, "measurements"):
@@ -317,7 +318,10 @@ def analyze(
         bca_future = None
         if run_bca:
 
-            progress("Computing body composition (tissues, BCA measurements) ...")
+            progress(
+                "Computing body composition (tissues, BCA measurements) ..."
+                if opt.measurements else "Deriving tissues ..."
+            )  # fmt: skip
 
             def run_bca_fn():
                 with _Timer(stats, "bca"):
@@ -327,6 +331,9 @@ def analyze(
                     res.segmentations["tissues"] = tissues
                     if save:
                         save_futures.append(executor.submit(_save, tissues, output_dir / f"tissues{ext}"))
+                    stats["bca_regions"] = body_region_flags(res.segmentations["body_regions"])
+                    if not opt.measurements:
+                        return None, None
                     bca_json, vertebrae = compute_bca_measurements(
                         ctx.orig,
                         res.segmentations.get("body_parts"),
@@ -335,7 +342,6 @@ def analyze(
                         res.segmentations.get("total"),
                         opt.bca_examined_body_region,
                     )
-                    stats["bca_regions"] = body_region_flags(res.segmentations["body_regions"])
                     return bca_json, vertebrae
 
             bca_future = executor.submit(run_bca_fn)
@@ -355,7 +361,7 @@ def analyze(
 
         if bca_future is not None:
             res.bca_measurements, vertebrae = bca_future.result()
-            if output_dir is not None:
+            if output_dir is not None and res.bca_measurements is not None:
                 (output_dir / "bca-measurements.json").write_text(json.dumps(res.bca_measurements, indent=2))
                 if vertebrae:
                     (output_dir / "vertebrae.json").write_text(json.dumps(vertebrae, indent=2))
@@ -366,12 +372,12 @@ def analyze(
         for f in save_futures:  # all segmentations on disk
             f.result()
 
-        if opt.contrast and "total" in tasks and save:
+        if opt.measurements and opt.contrast and "total" in tasks and save:
             progress("Predicting contrast phase (if boa-contrast is installed) ...")
             info += _contrast(ct_path or output_dir / f"image{ext}", ctx, output_dir, ext, stats)
 
         res.info = info
-        if output_dir is not None and opt.excel:
+        if output_dir is not None and opt.measurements and opt.excel:
             progress("Writing output.xlsx ...")
             with _Timer(stats, "excel"):
                 res.excel_path = write_excel(output_dir / "output.xlsx", info, regions_df, cnr_df, res.bca_measurements)
@@ -381,7 +387,7 @@ def analyze(
     executor.shutdown(wait=True)
 
     stats["total_time"] = round(time.perf_counter() - t_start, 3)
-    if output_dir is not None:
+    if output_dir is not None and opt.measurements:
         (output_dir / "boa_light_stats.json").write_text(json.dumps(stats, indent=2, default=str))
     logger.info("Complete CT analysis: DONE in %.2fs", stats["total_time"])
     progress(f"Done in {stats['total_time']:.1f}s" + (f" -> {output_dir}" if output_dir is not None else ""))

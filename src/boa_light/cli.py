@@ -16,6 +16,7 @@ def _run(args) -> int:
 
     opt = Options(
         models=args.models,
+        measurements=args.measurements,
         device=args.device,
         fast_total=args.fast_total,
         fast_bca=args.fast_bca,
@@ -76,7 +77,8 @@ def _models_help() -> str:
 
 
 RUN_EXAMPLES = """examples:
-  boa-light run ct.nii.gz out/                         all open models (like BOA --models all)
+  boa-light run ct.nii.gz out/                         all open models, label images only
+  boa-light run ct.nii.gz out/ --measurements          + all BOA measurements/reports (JSON, Excel)
   boa-light run dicom_dir/ out/ -m total+bca           DICOM input (needs the [dicom] extra)
   boa-light run ct.nii.gz out/ -m bca --bca-skip-body-parts
                                                        BCA without the body_parts model
@@ -84,9 +86,9 @@ RUN_EXAMPLES = """examples:
   boa-light run ct.nii.gz out/ --fast-bca --crop-source total
                                                        fastest full run (not identical to BOA)
 
-outputs (in OUTPUT): <model>.nii.gz label images, tissues.nii.gz, ct_pfav.nii.gz,
-  total-measurements.json, bca-measurements.json, vertebrae.json, output.xlsx,
-  boa_light_stats.json (timings)
+outputs (in OUTPUT): <model>.nii.gz label images (+ tissues.nii.gz with bca);
+  with --measurements also ct_pfav.nii.gz, total-measurements.json, bca-measurements.json,
+  vertebrae.json, output.xlsx and boa_light_stats.json (timings)
 
 weights are stored in $BOA_LIGHT_WEIGHTS, $TOTALSEG_WEIGHTS_PATH or
   ~/.totalsegmentator/nnunet/results (shared with TotalSegmentator)"""
@@ -145,13 +147,20 @@ def build_parser() -> argparse.ArgumentParser:
         "'total' segmentation (one network less, slightly different crops)",
     )  # fmt: skip
 
-    g = r.add_argument_group("analysis options")
+    g = r.add_argument_group("measurements and reports (off by default: only label images are written)")
+    g.add_argument(
+        "--measurements", "--reports", action="store_true",
+        help="also compute BOA's measurements and reports: total-measurements.json, ct_pfav.nii.gz, "
+        "bca-measurements.json, vertebrae.json, output.xlsx, boa_light_stats.json, contrast phase "
+        "(and image.nii.gz for DICOM input). The options below only apply with --measurements",
+    )  # fmt: skip
     g.add_argument("--cnr-adjustment", action="store_true",
                    help="add the 'cnr-adjusted' sheet (eroded aorta/autochthon measurements)")
     g.add_argument("--skip-contrast-information", action="store_true",
                    help="skip contrast phase prediction (only runs if boa-contrast is installed)")
     g.add_argument("--bca-median-filtering", action="store_true",
-                   help="in-plane 3x3 median filter on the CT before tissue classification")
+                   help="in-plane 3x3 median filter on the CT before tissue classification "
+                   "(also affects tissues.nii.gz)")
     g.add_argument("--bca-examined-body-region", choices=["abdomen", "neck", "thorax"], default=None,
                    help="force the BCA aggregation region instead of detecting it")
 

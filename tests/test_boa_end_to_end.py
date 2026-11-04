@@ -50,7 +50,7 @@ def both(reference, tall_ct, tmp_path_factory):
         cnr_adjustment=True,
     )
     bl_out = tmp_path_factory.mktemp("bl")
-    analyze(tall_ct, bl_out, Options(models=MODELS, contrast=False, cnr_adjustment=True), predict_fn=fake_predict_fn)
+    analyze(tall_ct, bl_out, Options(models=MODELS, measurements=True, contrast=False, cnr_adjustment=True), predict_fn=fake_predict_fn)
     return boa_out, bl_out
 
 
@@ -154,7 +154,7 @@ def skip_parts(both, tall_ct, tmp_path_factory):
 
     analyze(
         tall_ct, out,
-        Options(models=MODELS, contrast=False, cnr_adjustment=True, bca_skip_body_parts=True),
+        Options(models=MODELS, measurements=True, contrast=False, cnr_adjustment=True, bca_skip_body_parts=True),
         predict_fn=recording_predict,
     )  # fmt: skip
     return boa_out, out, calls

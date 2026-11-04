@@ -42,7 +42,7 @@ def test_pipeline_outputs(tmp_path, crop_source):
     p = tmp_path / "ct.nii.gz"
     nib.save(ct, p)
     out = tmp_path / "out"
-    res = analyze(p, out, Options(models="all", contrast=False, crop_source=crop_source), predict_fn=fake_predict_fn)
+    res = analyze(p, out, Options(models="all", measurements=True, contrast=False, crop_source=crop_source), predict_fn=fake_predict_fn)
     for name in ["total", "lung_vessels", "cerebral_bleed", "hip_implant", "liver_vessels",
                  "pleural_pericard_effusion", "body_parts", "body_regions", "tissues", "ct_pfav"]:  # fmt: skip
         img = nib.load(out / f"{name}.nii.gz")
@@ -62,18 +62,31 @@ def test_pipeline_outputs(tmp_path, crop_source):
 
 
 def test_in_memory_no_output(tmp_path):
-    res = analyze(_synthetic_ct(), None, Options(models="total+liver_vessels", contrast=False), predict_fn=fake_predict_fn)
+    res = analyze(_synthetic_ct(), None, Options(models="total+liver_vessels", measurements=True, contrast=False), predict_fn=fake_predict_fn)
     assert set(res.segmentations) == {"total", "liver_vessels"}
     assert res.measurements is not None and res.excel_path is None
 
 
 def test_skip_body_parts_without_reference(tmp_path):
-    res = analyze(_synthetic_ct(), tmp_path, Options(models="bca", contrast=False, bca_skip_body_parts=True),
+    res = analyze(_synthetic_ct(), tmp_path, Options(models="bca", measurements=True, contrast=False, bca_skip_body_parts=True),
                   predict_fn=fake_predict_fn)  # fmt: skip
     assert "body_parts" not in res.segmentations and "tissues" in res.segmentations
     assert "bca-slice-measurements_no_ext" not in pd.ExcelFile(tmp_path / "output.xlsx").sheet_names
 
 
+def test_default_writes_only_labels(tmp_path):
+    p = tmp_path / "ct.nii.gz"
+    nib.save(_synthetic_ct(), p)
+    out = tmp_path / "out"
+    res = analyze(p, out, Options(models="total+bca+liver_vessels"), predict_fn=fake_predict_fn)
+    files = sorted(f.name for f in out.iterdir())
+    assert files == sorted(f"{n}.nii.gz" for n in
+                           ["total", "liver_vessels", "body_parts", "body_regions", "tissues"])  # fmt: skip
+    assert res.measurements is None and res.bca_measurements is None and res.excel_path is None
+
+
 def test_cli_parser():
     args = build_parser().parse_args(["run", "in.nii.gz", "out", "-m", "total+bca", "--fast-bca"])
     assert args.models == "total+bca" and args.fast_bca and args.device == "auto"
+    assert not args.measurements
+    assert build_parser().parse_args(["run", "a", "b", "--reports"]).measurements

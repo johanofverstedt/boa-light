@@ -80,7 +80,8 @@ TotalSegmentator's `TOTALSEG_WEIGHTS_PATH`) before downloading and running.
 ## 6. Run
 
 ```bash
-boa-light -v run ct.nii.gz out/                  # all open models
+boa-light run ct.nii.gz out/                     # all open models, label images only
+boa-light run ct.nii.gz out/ --measurements      # + measurements, JSON and Excel reports
 boa-light -v run dicom_folder/ out/ -m total+bca
 ```
 

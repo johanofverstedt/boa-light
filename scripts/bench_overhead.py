@@ -24,7 +24,7 @@ models = sys.argv[3] if len(sys.argv) > 3 else "total+bca+lung_vessels+cerebral_
 ref = load_reference()
 
 t = time.perf_counter()
-analyze(ct, out / "boa_light", Options(models=models, contrast=False), predict_fn=fake_predict_fn)
+analyze(ct, out / "boa_light", Options(models=models, measurements=True, contrast=False), predict_fn=fake_predict_fn)
 t_bl = time.perf_counter() - t
 print(f"BOA_light: {t_bl:.1f} s", flush=True)
 

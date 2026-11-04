@@ -4,7 +4,8 @@ A small, pip-installable and faster way to run
 [BOA (Body and Organ Analysis)](https://github.com/UMEssen/Body-and-Organ-Analysis) including
 [TotalSegmentator](https://github.com/wasserth/TotalSegmentator) on a CT scan, without Docker.
 It uses **only openly licensed models**, has **no PDF report**, and produces the same
-segmentations, `*-measurements.json` files and `output.xlsx` as BOA.
+segmentations as BOA. By default it writes **only the label images**. With `--measurements` it also
+writes BOA's `*-measurements.json` files and `output.xlsx`.
 
 See **[INSTALL.md](INSTALL.md)** for step-by-step installation in a conda environment. In short:
 
@@ -14,7 +15,8 @@ conda install pip setuptools
 python -m pip install torch --index-url https://download.pytorch.org/whl/cu124   # matching your CUDA
 python -m pip install --no-build-isolation "./[dicom]"
 boa-light download                      # fetch weights once (~5 GB; reuses ~/.totalsegmentator)
-boa-light run ct.nii.gz out/            # all open models, like BOA's "--models all"
+boa-light run ct.nii.gz out/            # all open models, like BOA's "--models all" (labels only)
+boa-light run ct.nii.gz out/ --measurements   # + BOA's measurements and Excel report
 boa-light run dicom_dir/ out/ -m total+bca --fast-bca
 ```
 
@@ -22,9 +24,9 @@ From Python:
 
 ```python
 from boa_light import analyze, Options
-res = analyze("ct.nii.gz", "out/", Options(models="total+bca"))
+res = analyze("ct.nii.gz", "out/", Options(models="total+bca", measurements=True))
 res.segmentations["total"]      # nibabel image, also written to out/total.nii.gz
-res.measurements                # == out/total-measurements.json
+res.measurements                # == out/total-measurements.json (None without measurements=True)
 ```
 
 ## Models
@@ -32,7 +34,7 @@ res.measurements                # == out/total-measurements.json
 | model | output | networks |
 |---|---|---|
 | `total` | `total.nii.gz` (117 structures) | 291–295 at 1.5 mm (`--fast-total`: 297 at 3 mm) |
-| `bca` | `body_parts`, `body_regions`, `tissues`, `bca-measurements.json` | 543, 542 (5 folds; `--fast-bca`: 1 fold); adds `total`. `--bca-skip-body-parts` drops 543 |
+| `bca` | `body_parts`, `body_regions`, `tissues` (+ `bca-measurements.json` with `--measurements`) | 543, 542 (5 folds; `--fast-bca`: 1 fold); adds `total`. `--bca-skip-body-parts` drops 543 |
 | `lung_vessels` | `lung_vessels.nii.gz` | 258 (cropped to the lungs) |
 | `cerebral_bleed` | `cerebral_bleed.nii.gz` | 150 (cropped to the brain) |
 | `hip_implant` | `hip_implant.nii.gz` | 260 (cropped to hips/femurs) |
@@ -44,7 +46,7 @@ res.measurements                # == out/total-measurements.json
 which is BOA's `all` without the licensed `heartchambers_highres`. `boa-light list` shows the models
 and which weights are installed.
 
-Other outputs: `ct_pfav.nii.gz`, `vertebrae.json`, `output.xlsx` (sheets `info`, `regions-statistics`,
+Outputs with `--measurements`: `ct_pfav.nii.gz`, `vertebrae.json`, `output.xlsx` (sheets `info`, `regions-statistics`,
 `cnr-adjusted` (with `--cnr-adjustment`), `bca-aggregated-measurements`, `bca-slice-measurements`,
 `bca-slice-measurements_no_ext`), and `boa_light_stats.json` with timings. Contrast phase prediction runs
 if the optional `boa-contrast` package is installed (`pip install "boa-light[contrast]"`).
