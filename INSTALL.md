@@ -72,6 +72,7 @@ is used.
 ```bash
 boa-light download          # ~5 GB; reuses ~/.totalsegmentator/nnunet/results if present
 boa-light list              # shows models and which weights are installed
+boa-light download -m thymus   # optional: the thymus model (from zenodo.org)
 ```
 
 To keep the weights somewhere else, set `export BOA_LIGHT_WEIGHTS=/path/to/weights` (or

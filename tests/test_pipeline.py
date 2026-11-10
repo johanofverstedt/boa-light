@@ -227,3 +227,72 @@ def test_label_resampling_integer_path_identical(target):
         ref = ndimage.zoom(seg.astype(np.float64), zoom, mode="nearest", order=0).astype(np.uint8)
     assert np.asanyarray(new.dataobj).dtype == np.uint8
     np.testing.assert_array_equal(np.asanyarray(new.dataobj), ref)
+
+
+class FakeThymusRunner:
+    """Stands in for ThymusSegmenter (prepare / infer / finalize) without torch."""
+
+    def __init__(self):
+        self.calls = []
+
+    def prepare(self, img):
+        self.calls.append("prepare")
+        return {"data": np.asanyarray(img.dataobj)}
+
+    def infer(self, prepared):
+        self.calls.append("infer")
+        return prepared["data"] > 0  # "fat-like" voxels
+
+    def finalize(self, prepared, raw):
+        self.calls.append("finalize")
+        return raw.astype(np.uint8)
+
+
+def test_thymus_task_with_fake_runner(tmp_path):
+    from boa_light.models import resolve_models
+
+    assert resolve_models("thymus") == (["thymus"], False)
+    assert resolve_models("all+thymus")[0][-1] == "thymus"
+    assert "thymus" not in resolve_models("all")[0]
+
+    ct = _synthetic_ct()
+    p = tmp_path / "ct.nii.gz"
+    nib.save(ct, p)
+    runner = FakeThymusRunner()
+    out = tmp_path / "out"
+    res = analyze(p, out, Options(models="total+thymus", measurements=True, contrast=False),
+                  predict_fn=fake_predict_fn, external_runners={"thymus": runner})  # fmt: skip
+    assert runner.calls == ["prepare", "infer", "finalize"]
+    img = nib.load(out / "thymus.nii.gz")
+    assert img.shape == ct.shape and img.get_data_dtype() == np.uint8
+    np.testing.assert_allclose(img.affine, ct.affine)
+    np.testing.assert_array_equal(np.asanyarray(img.dataobj), (np.asanyarray(ct.dataobj) > 0).astype(np.uint8))
+    assert b"anterior_mediastinal_fat" in img.header.extensions[0].get_content()
+    assert "anterior_mediastinal_fat" in res.measurements["segmentations"]["thymus"]
+
+
+def test_thymus_checkpoint_formats():
+    torch = pytest.importorskip("torch")
+    if not isinstance(getattr(torch, "__file__", None), str):
+        pytest.skip("torch is stubbed by another test")
+
+    from boa_light.thymus import _state_dict_from_checkpoint
+
+    sd = {"a.weight": torch.zeros(1)}
+    assert _state_dict_from_checkpoint({"network": sd}) == sd
+    assert _state_dict_from_checkpoint(sd) == sd
+    assert _state_dict_from_checkpoint({"module.a.weight": sd["a.weight"]}).keys() == sd.keys()
+
+
+def test_thymus_spacing_target_geometry():
+    from boa_light.thymus import spacing_target
+
+    aff = np.diag([1.5, 1.5, 1.5, 1.0])
+    aff[:3, 3] = [10, 20, 30]
+    new_aff, shape = spacing_target(aff, (100, 80, 60))  # already at 1.5 mm, RAS
+    assert shape == (100, 80, 60) and np.allclose(new_aff, aff)
+    aff = np.diag([-0.75, -0.75, 3.0, 1.0])  # LPS-like in-plane, 3 mm slices
+    new_aff, shape = spacing_target(aff, (512, 512, 100))
+    assert shape == (256, 256, 199)
+    assert np.allclose(np.diag(new_aff)[:3], 1.5)  # diagonal output grid (no flips)
+    assert np.allclose(new_aff[:3, 3], [-383.25, -383.25, 0.0])  # world corner of the input

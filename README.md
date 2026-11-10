@@ -41,9 +41,21 @@ res.measurements                # == out/total-measurements.json (None without m
 | `liver_vessels` | `liver_vessels.nii.gz` | 8 (cropped to the liver) |
 | `pleural_pericard_effusion` | `pleural_pericard_effusion.nii.gz` | 315, all folds (cropped to the lungs) |
 | `liver_segments` | `liver_segments.nii.gz` | 570 (opt-in, not in `all`) |
+| `thymus` | `thymus.nii.gz` (anterior mediastinal fat, the region containing the thymus) | [Open Thymus Segmentator](https://github.com/vprudente/open_thymus_segmentator) UNet (opt-in, not in `all`; weights from Zenodo) |
 
 `all` = `total+bca+lung_vessels+cerebral_bleed+hip_implant+liver_vessels+pleural_pericard_effusion`,
-which is BOA's `all` without the licensed `heartchambers_highres`. `boa-light list` shows the models
+which is BOA's `all` without the licensed `heartchambers_highres`. Add the thymus model with
+`-m all+thymus`.
+
+The thymus model is a MONAI bundle, but BOA_light does not depend on MONAI. The parts of MONAI that
+the bundle uses (UNet, Spacing, intensity transforms, sliding window, largest-component filter,
+inverse resampling) are re-implemented in `boa_light/thymus.py` with torch, numpy and scipy, following
+MONAI's code step by step. The network's module names match MONAI's, so the checkpoint loads strictly.
+`scripts/check_thymus_against_monai.py` checks every piece against MONAI, and
+`scripts/compare_thymus_with_bundle.py` compares with an output of the original bundle. The weights
+are downloaded from Zenodo (record 18355851) on first use. Where zenodo.org is not reachable, download
+the `.pt` file manually and pass `--thymus-weights PATH`, or put it in
+`~/.totalsegmentator/nnunet/results/open_thymus_segmentator/`. `boa-light list` shows the models
 and which weights are installed.
 
 Outputs with `--measurements`: `ct_pfav.nii.gz`, `vertebrae.json`, `output.xlsx` (sheets `info`, `regions-statistics`,

@@ -142,6 +142,7 @@ class_map = {'total': {1: 'spleen',
 class_map['body_parts'] = {e.value: e.name.lower() for e in BodyParts}
 class_map['body_regions'] = {e.value: e.name.lower() for e in BodyRegion}
 class_map['tissues'] = {e.value: e.name.lower() for e in Tissue}
+class_map['thymus'] = {1: 'anterior_mediastinal_fat'}  # Open Thymus Segmentator
 
 class_map_5_parts = {'class_map_part_organs': {1: 'spleen',
                            2: 'kidney_right',

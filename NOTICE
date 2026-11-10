@@ -15,6 +15,18 @@ This product contains code ported from:
   (task definitions, label maps, resampling/cropping/reorientation helpers,
   NIfTI label-map extension; ported from v2.12.0 as vendored by BOA)
 
+* Open Thymus Segmentator (Apache License 2.0)
+  https://github.com/vprudente/open_thymus_segmentator
+  Copyright 2023 Vasco Prudente & Keno Bressem
+  (pre-/post-processing parameters, windowing, model definition)
+
+* MONAI (Apache License 2.0)
+  https://github.com/Project-MONAI/MONAI
+  Copyright MONAI Consortium
+  (minimal re-implementations of UNet, Spacing/SpatialResample, NormalizeIntensity,
+  GaussianSmooth, ScaleIntensity, sliding window inference and
+  KeepLargestConnectedComponent in boa_light/thymus.py)
+
 Model weights are downloaded at run time and are not part of this package. Only
 the openly licensed (Apache-2.0) TotalSegmentator models and the BOA body
 composition models are used. Please cite TotalSegmentator, BOA and nnU-Net when

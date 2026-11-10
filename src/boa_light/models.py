@@ -135,6 +135,8 @@ TASKS: dict[str, Task] = {
         Task("body_regions", "body_regions", (542,), resample=(5.0, 5.0, 5.0),
              resample_only_thickness=True, folds=(0, 1, 2, 3, 4), kind="bca",
              description="BCA body regions"),
+        Task("thymus", "thymus", (), kind="external",
+             description="Anterior mediastinal fat / thymus region (Open Thymus Segmentator)"),
     ]
 }  # fmt: skip
 
@@ -143,9 +145,10 @@ TOTAL_FAST = Task("total", "total", (297,), resample=(3.0, 3.0, 3.0),
                   description="TotalSegmentator fast (3 mm)")  # fmt: skip
 
 # User facing model names. "bca" expands to total + body_parts + body_regions + tissues.
-SELECTABLE = ["total", "bca", "body_parts", "body_regions"] + [
+SELECTABLE = ["total", "bca", "body_parts", "body_regions", "thymus"] + [
     n for n, t in TASKS.items() if t.crop is not None
 ]
+EXTERNAL_TASKS = [n for n, t in TASKS.items() if t.kind == "external"]  # not nnU-Net
 ALL_DEFAULT = [
     "total",
     "bca",
@@ -180,7 +183,7 @@ def resolve_models(spec: str | list[str] | None, bca_skip_body_parts: bool = Fal
     run_bca = "bca" in names
     if run_bca:
         names = ["total", *([] if bca_skip_body_parts else ["body_parts"]), "body_regions", *names]
-    for n in ["total", *CROP_TASKS, "body_parts", "body_regions"]:
+    for n in ["total", *CROP_TASKS, "body_parts", "body_regions", *EXTERNAL_TASKS]:
         if n in names and n not in tasks:
             tasks.append(n)
     return tasks, run_bca

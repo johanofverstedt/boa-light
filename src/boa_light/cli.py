@@ -33,6 +33,7 @@ def _run(args) -> int:
         fast_export=not args.no_fast_export,
         progress=not args.quiet,
         export_folds=args.export_folds,
+        thymus_weights=args.thymus_weights,
         tile_batch=args.tile_batch,
         resample_threads=args.resample_threads,
     )
@@ -52,6 +53,12 @@ def _download(args) -> int:
         state = "present" if weights.is_available(tid) else "downloading"
         print(f"  {tid:4d} {NETWORKS[tid].folder}: {state}")
         weights.download(tid)
+    if "thymus" in tasks or args.everything:
+        from boa_light import thymus
+
+        path = thymus.find_weights()
+        print(f"  thymus (Zenodo {thymus.ZENODO_RECORD}): {'present' if path else 'downloading'}")
+        thymus.download_weights()
     return 0
 
 
@@ -65,6 +72,9 @@ def _list(_args) -> int:
     print(f"\nWeights directory: {weights.weights_dir()}")
     for tid, net in NETWORKS.items():
         print(f"  {tid:4d} {'[x]' if weights.is_available(tid) else '[ ]'} {net.folder}")
+    from boa_light import thymus
+
+    print(f"  thymus {'[x]' if thymus.find_weights() else '[ ]'} {thymus.thymus_weights_dir()}")
     return 0
 
 
@@ -86,6 +96,7 @@ RUN_EXAMPLES = """examples:
   boa-light run ct.nii.gz out/ -m bca --bca-skip-body-parts
                                                        BCA without the body_parts model
   boa-light run ct.nii.gz out/ -m total --fast-total   quick 3 mm TotalSegmentator only
+  boa-light run ct.nii.gz out/ -m all+thymus           also the thymus region (anterior mediastinal fat)
   boa-light run ct.nii.gz out/ --fast-bca --crop-source total
                                                        fastest full run (not identical to BOA)
 
@@ -130,6 +141,11 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument(
         "-m", "--models", default="all", metavar="MODELS",
         help="'+'-separated list of models, or 'all' (default). See the model list below.",
+    )  # fmt: skip
+    g.add_argument(
+        "--thymus-weights", type=Path, default=None, metavar="PATH",
+        help="checkpoint (.pt) of the Open Thymus Segmentator, if not downloaded automatically "
+        "from Zenodo (record 18355851)",
     )  # fmt: skip
     g.add_argument(
         "--bca-skip-body-parts", action="store_true",

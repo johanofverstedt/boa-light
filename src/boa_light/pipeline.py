@@ -19,10 +19,11 @@ import pandas as pd
 
 from boa_light import __version__
 from boa_light.bca import body_region_flags, compute_bca_measurements, postprocess_nifti, subclassify_tissues
-from boa_light.imaging import lps_shape_spacing, set_resample_workers
+from boa_light.imaging import add_label_map_to_nifti, lps_shape_spacing, set_resample_workers
+from boa_light.class_maps import class_map
 from boa_light.engine import ImageContext, PredictFn, Prepared, SegmentationEngine, roi_mask
 from boa_light.measurements import compute_measurements, segmentator_metrics
-from boa_light.models import CROP_TASKS, ROUGH, TASKS, TOTAL_FAST, networks_for, resolve_models
+from boa_light.models import CROP_TASKS, EXTERNAL_TASKS, ROUGH, TASKS, TOTAL_FAST, networks_for, resolve_models
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +48,7 @@ class Options:
     fast_export: bool = True  # argmax on the GPU (identical result, much faster)
     progress: bool = True  # print progress messages to stderr
     export_folds: bool = False  # also save the label map of every fold of ensemble models
+    thymus_weights: Path | None = None  # local checkpoint for the thymus model (else downloaded)
     tile_batch: int = 1  # >1: several sliding-window tiles per forward pass (opt-in, ~identical)
     resample_threads: int | None = None  # threads for (bit-identical) parallel resampling; None = all CPUs
     download: bool = True
@@ -116,10 +118,12 @@ def analyze(
     output_dir: Path | None,
     options: Options | None = None,
     predict_fn: PredictFn | None = None,
+    external_runners: dict | None = None,
 ) -> Result:
     """Run all requested models on one CT and compute the BOA measurements.
 
-    ``predict_fn`` can replace the nnU-Net model pool (used for testing).
+    ``predict_fn`` can replace the nnU-Net model pool and ``external_runners`` the
+    non-nnU-Net models such as ``{"thymus": runner}`` (used for testing).
     """
     opt = options or Options()
     set_resample_workers(opt.resample_threads)
@@ -210,6 +214,16 @@ def analyze(
     def task_obj(name):
         return TOTAL_FAST if (name == "total" and opt.fast_total) else TASKS[name]
 
+    # Models that are not nnU-Net (own prepare / infer / finalize), e.g. the thymus model
+    runners = dict(external_runners or {})
+    for n in tasks:
+        if n in EXTERNAL_TASKS and n not in runners:
+            if n == "thymus":
+                from boa_light.thymus import ThymusSegmenter
+
+                progress("Loading thymus model ...")
+                runners[n] = ThymusSegmenter(opt.device, opt.thymus_weights, opt.weights_root, opt.download)
+
     crop_tasks = [n for n in tasks if n in CROP_TASKS]
     use_total_crop = opt.crop_source == "total" and "total" in tasks
     run_rough = bool(crop_tasks) and not use_total_crop
@@ -219,6 +233,7 @@ def analyze(
     # GPU order: rough (small, unlocks crop preparation) -> total -> crops -> BCA
     order: list[str] = (["_rough"] if run_rough else []) + [n for n in tasks if n == "total"]
     order += crop_tasks + [n for n in tasks if n in ("body_parts", "body_regions")]
+    order += [n for n in tasks if n in runners]
 
     executor = ThreadPoolExecutor(max_workers=max(1, opt.threads))
     prep_futures: dict[str, Future] = {}
@@ -252,6 +267,21 @@ def analyze(
     for n in tasks:
         if n == "total" or n in ("body_parts", "body_regions"):
             submit_prep(n, lambda n=n: engine.prepare(task_obj(n)))
+        elif n in runners:
+            submit_prep(n, lambda n=n: runners[n].prepare(ctx.orig))
+
+    def finalize_external(name: str, prepared, raw):
+        data = runners[name].finalize(prepared, raw)
+        if data.shape != ctx.orig.shape[:3]:
+            raise RuntimeError(f"{name}: output shape {data.shape} != input shape {ctx.orig.shape[:3]}")
+        header = ctx.orig.header.copy()
+        header.set_data_dtype(np.uint8)
+        img_out = add_label_map_to_nifti(
+            nib.Nifti1Image(data.astype(np.uint8), ctx.orig.affine, header), class_map[TASKS[name].label_map_key]
+        )
+        if save:
+            save_futures.append(executor.submit(_save, img_out, output_dir / f"{name}{ext}"))
+        return img_out
 
     def finalize_one(name: str, prep: Prepared, seg, path: Path | None):
         img_out = engine.finalize(prep, seg)
@@ -284,6 +314,17 @@ def analyze(
                     source = "total" if use_total_crop else "rough"
                     src_img = final_futures["total" if use_total_crop else "_rough"].result()
                     submit_prep(name, lambda n=name, s=src_img: crop_prep(n, s, source))
+                if name in runners:
+                    progress(f"  [{step}/{len(order)}] {name} (1 network) ...")
+                    prepared = prep_futures[name].result()
+                    t0 = time.perf_counter()
+                    raw = runners[name].infer(prepared)
+                    gpu_time[name] = round(time.perf_counter() - t0, 3)
+                    remaining = len(order) - step
+                    progress(f"  [{step}/{len(order)}] {name} done in {gpu_time[name]:.1f}s"
+                             + (f", {remaining} step(s) remaining" if remaining else ""))  # fmt: skip
+                    final_futures[name] = executor.submit(finalize_external, name, prepared, raw)
+                    continue
                 task = ROUGH if name == "_rough" else task_obj(name)
                 n_folds = (1 if opt.fast_bca else 5) if task.kind == "bca" else 1
                 detail = f"{len(task.task_ids)} networks" if task.multimodel else (
@@ -328,7 +369,9 @@ def analyze(
             ctx.forget(key)
 
         # ------------------------------------------------------------ metrics
-        measured = {n: res.segmentations[n] for n in tasks if TASKS[n].kind == "ts"} if opt.measurements else {}
+        measured = (
+            {n: res.segmentations[n] for n in tasks if TASKS[n].kind in ("ts", "external")} if opt.measurements else {}
+        )
         if measured:
             progress("Computing measurements ...")
             with _Timer(stats, "measurements"):
@@ -379,7 +422,7 @@ def analyze(
                     ctx.orig,
                     res.segmentations.get("total"),
                     res.segmentations.get("body_parts"),
-                    [n for n in tasks if TASKS[n].kind == "ts" and n != "total"],
+                    [n for n in tasks if TASKS[n].kind in ("ts", "external") and n != "total"],
                 )
                 info += extra_info
 
